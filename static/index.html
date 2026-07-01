@@ -138,7 +138,8 @@
     <script>
 
         // ===================== STATE =====================
-        const API = 'http://localhost:8000';
+        const API = window.location.origin;
+        const WS_BASE = window.location.origin.replace('http', 'ws');
         let worldId = null;
         let robotId = null;
         let robotJoints = [];
@@ -232,99 +233,148 @@
         }
 
         // ===================== ROBOT VISUALIZATION =====================
+        let jointPositions3D = []; // Array of THREE.Vector3 for each joint pos
+        let linkCylinders = [];    // Cylinder meshes connecting joints
+        let jointSpheres = [];     // Sphere meshes at joint locations
+        let eeMesh = null;
+
         function buildRobotVisual(joints, linkCount) {
             // Remove existing robot
-            if (robotGroup) {
-                scene.remove(robotGroup);
-            }
+            if (robotGroup) scene.remove(robotGroup);
             robotGroup = new THREE.Group();
             linkMeshes = {};
+            linkCylinders = [];
+            jointSpheres = [];
+            jointPositions3D = [];
 
-            // Create link segments
             const colors = [
                 0x58a6ff, 0x3fb950, 0xd29922, 0xf78166, 
                 0xbc8cff, 0x79c0ff, 0x56d4dd, 0xff7b72, 0xffa657
             ];
 
-            // Base
-            const baseGeo = new THREE.CylinderGeometry(0.04, 0.05, 0.02, 32);
-            const baseMat = new THREE.MeshStandardMaterial({ color: 0x30363d, metalness: 0.6, roughness: 0.3 });
+            const numJoints = joints.filter(j => j !== 'ee_joint').length;
+
+            // Base platform
+            const baseGeo = new THREE.CylinderGeometry(0.05, 0.06, 0.025, 32);
+            const baseMat = new THREE.MeshStandardMaterial({ color: 0x30363d, metalness: 0.7, roughness: 0.2 });
             const baseMesh = new THREE.Mesh(baseGeo, baseMat);
-            baseMesh.position.y = 0.01;
+            baseMesh.position.y = 0.0125;
             baseMesh.castShadow = true;
             robotGroup.add(baseMesh);
-            linkMeshes['base_link'] = baseMesh;
 
-            // Joint + Link segments
-            let prevPos = new THREE.Vector3(0, 0.02, 0);
-            const linkLength = 0.1;
-
-            for (let i = 0; i < joints.length; i++) {
-                if (joints[i] === 'ee_joint') continue;
-
+            // Create joint spheres and link cylinders
+            for (let i = 0; i <= numJoints; i++) {
                 const color = colors[i % colors.length];
 
                 // Joint sphere
-                const jointGeo = new THREE.SphereGeometry(0.015, 16, 16);
-                const jointMat = new THREE.MeshStandardMaterial({ 
-                    color: color, emissive: color, emissiveIntensity: 0.2,
+                const radius = i === 0 ? 0.02 : 0.015;
+                const jointGeo = new THREE.SphereGeometry(radius, 20, 20);
+                const jointMat = new THREE.MeshStandardMaterial({
+                    color: color, emissive: color, emissiveIntensity: 0.15,
                     metalness: 0.4, roughness: 0.4
                 });
-                const jointMesh = new THREE.Mesh(jointGeo, jointMat);
-                jointMesh.position.copy(prevPos);
-                jointMesh.castShadow = true;
-                robotGroup.add(jointMesh);
+                const sphere = new THREE.Mesh(jointGeo, jointMat);
+                sphere.castShadow = true;
+                robotGroup.add(sphere);
+                jointSpheres.push(sphere);
 
-                // Link cylinder
-                const linkGeo = new THREE.CylinderGeometry(0.012, 0.012, linkLength, 12);
-                const linkMat = new THREE.MeshStandardMaterial({ 
-                    color: color, metalness: 0.5, roughness: 0.3 
-                });
-                const linkMesh = new THREE.Mesh(linkGeo, linkMat);
-                linkMesh.castShadow = true;
+                // Initial position straight up
+                const y = 0.025 + i * 0.1;
+                sphere.position.set(0, y, 0);
+                jointPositions3D.push(new THREE.Vector3(0, y, 0));
 
-                const linkName = `link_${i + 1}`;
-                linkMeshes[linkName] = linkMesh;
-                robotGroup.add(linkMesh);
-
-                // Default position (straight up)
-                const nextPos = prevPos.clone();
-                nextPos.y += linkLength;
-                linkMesh.position.set(
-                    (prevPos.x + nextPos.x) / 2,
-                    (prevPos.y + nextPos.y) / 2,
-                    (prevPos.z + nextPos.z) / 2
-                );
-
-                prevPos = nextPos;
+                // Link cylinder connecting this joint to the next
+                if (i < numJoints) {
+                    const linkGeo = new THREE.CylinderGeometry(0.012, 0.012, 1, 12); // height=1, we'll scale
+                    const linkMat = new THREE.MeshStandardMaterial({
+                        color: color, metalness: 0.5, roughness: 0.3
+                    });
+                    const cyl = new THREE.Mesh(linkGeo, linkMat);
+                    cyl.castShadow = true;
+                    robotGroup.add(cyl);
+                    linkCylinders.push(cyl);
+                }
             }
 
             // End effector
-            const eeGeo = new THREE.BoxGeometry(0.03, 0.015, 0.03);
+            const eeGeo = new THREE.BoxGeometry(0.035, 0.02, 0.035);
             const eeMat = new THREE.MeshStandardMaterial({ color: 0xf85149, emissive: 0xf85149, emissiveIntensity: 0.3 });
-            const eeMesh = new THREE.Mesh(eeGeo, eeMat);
-            eeMesh.position.copy(prevPos);
+            eeMesh = new THREE.Mesh(eeGeo, eeMat);
             eeMesh.castShadow = true;
             robotGroup.add(eeMesh);
-            linkMeshes['end_effector'] = eeMesh;
+            eeMesh.position.copy(jointSpheres[jointSpheres.length - 1].position);
 
             scene.add(robotGroup);
+            updateCylinders(); // Position cylinders between joints
+        }
+
+        function updateCylinders() {
+            // Position each cylinder to stretch between consecutive joint spheres
+            for (let i = 0; i < linkCylinders.length; i++) {
+                const cyl = linkCylinders[i];
+                const start = jointSpheres[i].position;
+                const end = jointSpheres[i + 1].position;
+
+                // Midpoint
+                cyl.position.set(
+                    (start.x + end.x) / 2,
+                    (start.y + end.y) / 2,
+                    (start.z + end.z) / 2
+                );
+
+                // Length
+                const dir = new THREE.Vector3().subVectors(end, start);
+                const length = dir.length();
+                cyl.scale.set(1, length, 1);
+
+                // Orientation: align Y-axis of cylinder with direction
+                if (length > 0.001) {
+                    const up = new THREE.Vector3(0, 1, 0);
+                    const quat = new THREE.Quaternion().setFromUnitVectors(up, dir.normalize());
+                    cyl.quaternion.copy(quat);
+                }
+            }
+
+            // Update end effector position
+            if (eeMesh && jointSpheres.length > 0) {
+                eeMesh.position.copy(jointSpheres[jointSpheres.length - 1].position);
+                eeMesh.position.y += 0.015;
+            }
         }
 
         function updateRobotFromState(robotState) {
             if (!robotState || !robotState.links) return;
 
-            for (const [linkName, poseData] of Object.entries(robotState.links)) {
-                const mesh = linkMeshes[linkName];
-                if (mesh && poseData.position) {
+            // Collect all link positions from physics in order
+            const linkNames = Object.keys(robotState.links);
+            
+            // Map link positions to joint spheres
+            // Order: base_link, link_1, link_2, ..., link_N, end_effector
+            const orderedLinks = ['base_link'];
+            for (let i = 1; i <= jointSpheres.length - 1; i++) {
+                orderedLinks.push(`link_${i}`);
+            }
+            orderedLinks.push('end_effector');
+
+            for (let i = 0; i < orderedLinks.length && i < jointSpheres.length; i++) {
+                const linkName = orderedLinks[i];
+                const poseData = robotState.links[linkName];
+                if (poseData && poseData.position) {
                     const [x, y, z] = poseData.position;
-                    mesh.position.set(x, z, -y); // Convert from sim coords (Z-up) to Three.js (Y-up)
-                }
-                if (mesh && poseData.orientation) {
-                    const [qx, qy, qz, qw] = poseData.orientation;
-                    mesh.quaternion.set(qx, qz, -qy, qw); // Convert quaternion
+                    // Convert from sim coords (Z-up) to Three.js (Y-up)
+                    jointSpheres[i].position.set(x, z, -y);
                 }
             }
+
+            // Update end effector
+            const eePose = robotState.links['end_effector'];
+            if (eePose && eePose.position && eeMesh) {
+                const [x, y, z] = eePose.position;
+                eeMesh.position.set(x, z, -y);
+            }
+
+            // Recompute cylinder positions between spheres
+            updateCylinders();
         }
 
         // ===================== API CALLS =====================
@@ -401,7 +451,7 @@
         // ===================== WEBSOCKET =====================
         function connectWebSocket() {
             if (ws) ws.close();
-            ws = new WebSocket(`ws://localhost:8000/ws/${worldId}`);
+            ws = new WebSocket(`${WS_BASE}/ws/${worldId}`);
             
             ws.onopen = () => setStatus('connected', 'WebSocket connected');
             ws.onclose = () => setStatus('disconnected', 'WebSocket closed');
