@@ -2,12 +2,15 @@
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, UploadFile, File, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
 from contextlib import asynccontextmanager
 import asyncio
 import json
 import uuid
 import tempfile
 import os
+from pathlib import Path
 
 from ...domain.models.world import World, WorldId, PhysicsConfig, SimStatus, StaticObject, DynamicObject
 from ...domain.models.robot import Robot, RobotId, RobotMetadata
@@ -66,6 +69,20 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Serve static files (frontend)
+_static_dir = Path(__file__).parent.parent.parent.parent / "static"
+if _static_dir.exists():
+    app.mount("/static", StaticFiles(directory=str(_static_dir)), name="static")
+
+
+@app.get("/")
+async def root():
+    """Serve the frontend."""
+    index_path = _static_dir / "index.html"
+    if index_path.exists():
+        return FileResponse(str(index_path))
+    return {"message": "RoboSim API. Visit /docs for API documentation."}
 
 
 # --- REST Endpoints ---

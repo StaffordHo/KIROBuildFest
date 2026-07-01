@@ -1,0 +1,486 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>RoboSim — Robotics Simulation Platform</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { 
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            background: #0d1117; color: #e6edf3; overflow: hidden;
+        }
+        #canvas-container { width: 100vw; height: 100vh; position: relative; }
+        canvas { display: block; }
+
+        /* Control Panel */
+        #panel {
+            position: absolute; top: 16px; left: 16px;
+            background: rgba(22, 27, 34, 0.95); border: 1px solid #30363d;
+            border-radius: 12px; padding: 20px; width: 320px;
+            backdrop-filter: blur(10px); z-index: 100;
+        }
+        #panel h1 { font-size: 18px; margin-bottom: 4px; color: #58a6ff; }
+        #panel .subtitle { font-size: 12px; color: #8b949e; margin-bottom: 16px; }
+        .section { margin-bottom: 16px; }
+        .section-title { font-size: 11px; text-transform: uppercase; letter-spacing: 1px; color: #8b949e; margin-bottom: 8px; }
+        
+        button {
+            background: #21262d; border: 1px solid #30363d; color: #e6edf3;
+            padding: 8px 14px; border-radius: 6px; cursor: pointer;
+            font-size: 13px; transition: all 0.15s;
+        }
+        button:hover { background: #30363d; border-color: #58a6ff; }
+        button.active { background: #1f6feb; border-color: #58a6ff; }
+        button.danger { border-color: #f85149; }
+        button.danger:hover { background: #da3633; }
+        .btn-group { display: flex; gap: 6px; flex-wrap: wrap; }
+
+        /* Joint Sliders */
+        .joint-slider { margin-bottom: 10px; }
+        .joint-slider label { 
+            display: flex; justify-content: space-between; 
+            font-size: 12px; color: #8b949e; margin-bottom: 4px;
+        }
+        .joint-slider input[type="range"] {
+            width: 100%; height: 4px; -webkit-appearance: none;
+            background: #30363d; border-radius: 2px; outline: none;
+        }
+        .joint-slider input[type="range"]::-webkit-slider-thumb {
+            -webkit-appearance: none; width: 14px; height: 14px;
+            background: #58a6ff; border-radius: 50%; cursor: pointer;
+        }
+
+        /* Status Bar */
+        #status {
+            position: absolute; bottom: 16px; left: 16px;
+            background: rgba(22, 27, 34, 0.9); border: 1px solid #30363d;
+            border-radius: 8px; padding: 10px 16px; font-size: 12px;
+            display: flex; gap: 20px; z-index: 100;
+        }
+        #status .item { display: flex; gap: 6px; align-items: center; }
+        #status .dot { width: 8px; height: 8px; border-radius: 50%; }
+        #status .dot.green { background: #3fb950; }
+        #status .dot.yellow { background: #d29922; }
+        #status .dot.red { background: #f85149; }
+
+        /* Info panel */
+        #info {
+            position: absolute; top: 16px; right: 16px;
+            background: rgba(22, 27, 34, 0.9); border: 1px solid #30363d;
+            border-radius: 12px; padding: 16px; width: 260px;
+            font-size: 12px; z-index: 100;
+        }
+        #info h3 { font-size: 13px; color: #58a6ff; margin-bottom: 8px; }
+        #info pre { 
+            background: #0d1117; padding: 8px; border-radius: 6px;
+            font-size: 11px; color: #7ee787; overflow: auto; max-height: 200px;
+        }
+    </style>
+</head>
+<body>
+    <div id="canvas-container"></div>
+
+    <!-- Control Panel -->
+    <div id="panel">
+        <h1>🤖 RoboSim</h1>
+        <p class="subtitle">Open Robotics Simulation Platform</p>
+
+        <div class="section">
+            <div class="section-title">Simulation</div>
+            <div class="btn-group">
+                <button id="btn-create" onclick="createWorld()">New World</button>
+                <button id="btn-start" onclick="controlSim('start')">▶ Start</button>
+                <button id="btn-pause" onclick="controlSim('pause')">⏸ Pause</button>
+                <button id="btn-reset" onclick="controlSim('reset')">↺ Reset</button>
+            </div>
+        </div>
+
+        <div class="section">
+            <div class="section-title">Robot</div>
+            <div class="btn-group">
+                <button onclick="addRobot(3)">3-DOF Arm</button>
+                <button onclick="addRobot(6)">6-DOF Arm</button>
+                <button onclick="addRobot(9)">9-DOF Arm</button>
+            </div>
+        </div>
+
+        <div class="section" id="joints-section" style="display:none;">
+            <div class="section-title">Joint Control</div>
+            <div id="joint-sliders"></div>
+        </div>
+
+        <div class="section">
+            <div class="section-title">Upload URDF</div>
+            <input type="file" id="urdf-file" accept=".urdf,.xml" onchange="uploadURDF()" 
+                   style="font-size:12px; color:#8b949e;">
+        </div>
+    </div>
+
+    <!-- Telemetry -->
+    <div id="info">
+        <h3>Telemetry</h3>
+        <pre id="telemetry">Waiting for simulation...</pre>
+    </div>
+
+    <!-- Status Bar -->
+    <div id="status">
+        <div class="item"><div class="dot red" id="status-dot"></div><span id="status-text">Disconnected</span></div>
+        <div class="item">Time: <span id="sim-time">0.00s</span></div>
+        <div class="item">Steps: <span id="sim-steps">0</span></div>
+        <div class="item">FPS: <span id="sim-fps">0</span></div>
+    </div>
+
+    <!-- Three.js from CDN -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+
+    <script>
+
+        // ===================== STATE =====================
+        const API = 'http://localhost:8000';
+        let worldId = null;
+        let robotId = null;
+        let robotJoints = [];
+        let ws = null;
+        let scene, camera, renderer, controls;
+        let robotGroup = null;
+        let linkMeshes = {};
+        let frameCount = 0;
+        let lastFpsTime = Date.now();
+
+        // ===================== THREE.JS SETUP =====================
+        function initScene() {
+            const container = document.getElementById('canvas-container');
+            
+            scene = new THREE.Scene();
+            scene.background = new THREE.Color(0x0d1117);
+
+            // Camera
+            camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.01, 100);
+            camera.position.set(0.5, 0.5, 0.5);
+            camera.lookAt(0, 0.2, 0);
+
+            // Renderer
+            renderer = new THREE.WebGLRenderer({ antialias: true });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.setPixelRatio(window.devicePixelRatio);
+            renderer.shadowMap.enabled = true;
+            container.appendChild(renderer.domElement);
+
+            // Controls
+            controls = new THREE.OrbitControls(camera, renderer.domElement);
+            controls.enableDamping = true;
+            controls.dampingFactor = 0.05;
+            controls.target.set(0, 0.15, 0);
+
+            // Lighting
+            const ambient = new THREE.AmbientLight(0x404040, 0.6);
+            scene.add(ambient);
+
+            const directional = new THREE.DirectionalLight(0xffffff, 0.8);
+            directional.position.set(2, 4, 3);
+            directional.castShadow = true;
+            scene.add(directional);
+
+            const point = new THREE.PointLight(0x58a6ff, 0.3);
+            point.position.set(-1, 2, -1);
+            scene.add(point);
+
+            // Grid
+            const grid = new THREE.GridHelper(2, 20, 0x30363d, 0x21262d);
+            scene.add(grid);
+
+            // Ground plane
+            const groundGeo = new THREE.PlaneGeometry(4, 4);
+            const groundMat = new THREE.MeshStandardMaterial({ 
+                color: 0x161b22, roughness: 0.9 
+            });
+            const ground = new THREE.Mesh(groundGeo, groundMat);
+            ground.rotation.x = -Math.PI / 2;
+            ground.position.y = -0.001;
+            ground.receiveShadow = true;
+            scene.add(ground);
+
+            // Axis helper
+            const axes = new THREE.AxesHelper(0.15);
+            scene.add(axes);
+
+            // Handle resize
+            window.addEventListener('resize', () => {
+                camera.aspect = window.innerWidth / window.innerHeight;
+                camera.updateProjectionMatrix();
+                renderer.setSize(window.innerWidth, window.innerHeight);
+            });
+
+            animate();
+        }
+
+        function animate() {
+            requestAnimationFrame(animate);
+            controls.update();
+            renderer.render(scene, camera);
+
+            // FPS counter
+            frameCount++;
+            const now = Date.now();
+            if (now - lastFpsTime > 1000) {
+                document.getElementById('sim-fps').textContent = frameCount;
+                frameCount = 0;
+                lastFpsTime = now;
+            }
+        }
+
+        // ===================== ROBOT VISUALIZATION =====================
+        function buildRobotVisual(joints, linkCount) {
+            // Remove existing robot
+            if (robotGroup) {
+                scene.remove(robotGroup);
+            }
+            robotGroup = new THREE.Group();
+            linkMeshes = {};
+
+            // Create link segments
+            const colors = [
+                0x58a6ff, 0x3fb950, 0xd29922, 0xf78166, 
+                0xbc8cff, 0x79c0ff, 0x56d4dd, 0xff7b72, 0xffa657
+            ];
+
+            // Base
+            const baseGeo = new THREE.CylinderGeometry(0.04, 0.05, 0.02, 32);
+            const baseMat = new THREE.MeshStandardMaterial({ color: 0x30363d, metalness: 0.6, roughness: 0.3 });
+            const baseMesh = new THREE.Mesh(baseGeo, baseMat);
+            baseMesh.position.y = 0.01;
+            baseMesh.castShadow = true;
+            robotGroup.add(baseMesh);
+            linkMeshes['base_link'] = baseMesh;
+
+            // Joint + Link segments
+            let prevPos = new THREE.Vector3(0, 0.02, 0);
+            const linkLength = 0.1;
+
+            for (let i = 0; i < joints.length; i++) {
+                if (joints[i] === 'ee_joint') continue;
+
+                const color = colors[i % colors.length];
+
+                // Joint sphere
+                const jointGeo = new THREE.SphereGeometry(0.015, 16, 16);
+                const jointMat = new THREE.MeshStandardMaterial({ 
+                    color: color, emissive: color, emissiveIntensity: 0.2,
+                    metalness: 0.4, roughness: 0.4
+                });
+                const jointMesh = new THREE.Mesh(jointGeo, jointMat);
+                jointMesh.position.copy(prevPos);
+                jointMesh.castShadow = true;
+                robotGroup.add(jointMesh);
+
+                // Link cylinder
+                const linkGeo = new THREE.CylinderGeometry(0.012, 0.012, linkLength, 12);
+                const linkMat = new THREE.MeshStandardMaterial({ 
+                    color: color, metalness: 0.5, roughness: 0.3 
+                });
+                const linkMesh = new THREE.Mesh(linkGeo, linkMat);
+                linkMesh.castShadow = true;
+
+                const linkName = `link_${i + 1}`;
+                linkMeshes[linkName] = linkMesh;
+                robotGroup.add(linkMesh);
+
+                // Default position (straight up)
+                const nextPos = prevPos.clone();
+                nextPos.y += linkLength;
+                linkMesh.position.set(
+                    (prevPos.x + nextPos.x) / 2,
+                    (prevPos.y + nextPos.y) / 2,
+                    (prevPos.z + nextPos.z) / 2
+                );
+
+                prevPos = nextPos;
+            }
+
+            // End effector
+            const eeGeo = new THREE.BoxGeometry(0.03, 0.015, 0.03);
+            const eeMat = new THREE.MeshStandardMaterial({ color: 0xf85149, emissive: 0xf85149, emissiveIntensity: 0.3 });
+            const eeMesh = new THREE.Mesh(eeGeo, eeMat);
+            eeMesh.position.copy(prevPos);
+            eeMesh.castShadow = true;
+            robotGroup.add(eeMesh);
+            linkMeshes['end_effector'] = eeMesh;
+
+            scene.add(robotGroup);
+        }
+
+        function updateRobotFromState(robotState) {
+            if (!robotState || !robotState.links) return;
+
+            for (const [linkName, poseData] of Object.entries(robotState.links)) {
+                const mesh = linkMeshes[linkName];
+                if (mesh && poseData.position) {
+                    const [x, y, z] = poseData.position;
+                    mesh.position.set(x, z, -y); // Convert from sim coords (Z-up) to Three.js (Y-up)
+                }
+                if (mesh && poseData.orientation) {
+                    const [qx, qy, qz, qw] = poseData.orientation;
+                    mesh.quaternion.set(qx, qz, -qy, qw); // Convert quaternion
+                }
+            }
+        }
+
+        // ===================== API CALLS =====================
+        async function createWorld() {
+            const r = await fetch(`${API}/worlds`, {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({ name: 'sim_world' })
+            });
+            const data = await r.json();
+            worldId = data.world_id;
+            setStatus('idle', 'World created');
+            connectWebSocket();
+        }
+
+        async function addRobot(dof) {
+            if (!worldId) { await createWorld(); }
+            const r = await fetch(`${API}/worlds/${worldId}/robots`, {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({ name: `arm_${dof}dof`, dof: dof, link_length: 0.1 })
+            });
+            const data = await r.json();
+            robotId = data.robot_id;
+            robotJoints = data.joints.filter(j => j !== 'ee_joint');
+            
+            buildRobotVisual(data.joints, dof);
+            buildJointSliders(robotJoints);
+            
+            document.getElementById('joints-section').style.display = 'block';
+            setStatus('idle', `${dof}-DOF robot added`);
+        }
+
+        async function controlSim(action) {
+            if (!worldId) return;
+            const r = await fetch(`${API}/worlds/${worldId}/control`, {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({ action })
+            });
+            const data = await r.json();
+            setStatus(data.status, `Simulation ${action}`);
+        }
+
+        async function sendJointPositions(positions) {
+            if (!worldId || !robotId) return;
+            await fetch(`${API}/worlds/${worldId}/joints`, {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({ robot_id: robotId, positions })
+            });
+        }
+
+        async function uploadURDF() {
+            const file = document.getElementById('urdf-file').files[0];
+            if (!file || !worldId) {
+                if (!worldId) await createWorld();
+                if (!file) return;
+            }
+            const formData = new FormData();
+            formData.append('file', file);
+            const r = await fetch(`${API}/worlds/${worldId}/robots/upload`, {
+                method: 'POST', body: formData
+            });
+            const data = await r.json();
+            robotId = data.robot_id;
+            robotJoints = data.joints.filter(j => !j.includes('fixed'));
+            buildRobotVisual(data.joints, data.dof);
+            buildJointSliders(robotJoints);
+            document.getElementById('joints-section').style.display = 'block';
+            setStatus('idle', `URDF loaded: ${data.name}`);
+        }
+
+        // ===================== WEBSOCKET =====================
+        function connectWebSocket() {
+            if (ws) ws.close();
+            ws = new WebSocket(`ws://localhost:8000/ws/${worldId}`);
+            
+            ws.onopen = () => setStatus('connected', 'WebSocket connected');
+            ws.onclose = () => setStatus('disconnected', 'WebSocket closed');
+            ws.onerror = () => setStatus('error', 'WebSocket error');
+            
+            ws.onmessage = (event) => {
+                const msg = JSON.parse(event.data);
+                if (msg.type === 'state_update') {
+                    document.getElementById('sim-time').textContent = msg.sim_time.toFixed(2) + 's';
+                    document.getElementById('sim-steps').textContent = msg.step_count;
+
+                    // Update 3D visualization
+                    for (const [rid, robotState] of Object.entries(msg.robots)) {
+                        updateRobotFromState(robotState);
+
+                        // Update telemetry
+                        const joints = robotState.joints || {};
+                        let telemetry = '';
+                        for (const [jname, jstate] of Object.entries(joints)) {
+                            telemetry += `${jname}: ${jstate.position.toFixed(3)} rad\n`;
+                        }
+                        document.getElementById('telemetry').textContent = telemetry || 'No data';
+                    }
+                }
+            };
+        }
+
+        // ===================== UI HELPERS =====================
+        function buildJointSliders(joints) {
+            const container = document.getElementById('joint-sliders');
+            container.innerHTML = '';
+            
+            for (const joint of joints) {
+                const div = document.createElement('div');
+                div.className = 'joint-slider';
+                div.innerHTML = `
+                    <label>
+                        <span>${joint}</span>
+                        <span id="val-${joint}">0.00</span>
+                    </label>
+                    <input type="range" min="-3.14" max="3.14" step="0.01" value="0"
+                           id="slider-${joint}" oninput="onSliderChange('${joint}', this.value)">
+                `;
+                container.appendChild(div);
+            }
+        }
+
+        function onSliderChange(joint, value) {
+            document.getElementById(`val-${joint}`).textContent = parseFloat(value).toFixed(2);
+            
+            // Collect all slider values and send
+            const positions = {};
+            for (const j of robotJoints) {
+                const slider = document.getElementById(`slider-${j}`);
+                if (slider) positions[j] = parseFloat(slider.value);
+            }
+            
+            // Send via WebSocket if connected, otherwise REST
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({ type: 'joint_command', positions }));
+            } else {
+                sendJointPositions(positions);
+            }
+        }
+
+        function setStatus(status, text) {
+            const dot = document.getElementById('status-dot');
+            const statusText = document.getElementById('status-text');
+            dot.className = 'dot';
+            
+            if (status === 'running' || status === 'connected') dot.classList.add('green');
+            else if (status === 'idle' || status === 'paused') dot.classList.add('yellow');
+            else dot.classList.add('red');
+            
+            statusText.textContent = text;
+        }
+
+        // ===================== INIT =====================
+        initScene();
+    </script>
+</body>
+</html>
