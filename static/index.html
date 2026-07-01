@@ -714,8 +714,8 @@
 
         function buildRobotFromGeometry(geometryData, joints, dof, meshBaseUrl) {
             /**
-             * Build robot visualization using URDF geometry with auto-generated body shapes.
-             * Renders industrial-looking capsules/cylinders for links and joint housings.
+             * Build robot visualization respecting kinematic TREE structure.
+             * Handles both serial chains (arms) and branching trees (quadrupeds, humanoids).
              */
             if (robotGroup) scene.remove(robotGroup);
             robotGroup = new THREE.Group();
@@ -727,141 +727,138 @@
                 return;
             }
 
-            const jointEntries = Object.entries(geometryData.joints);
-            const linkBodies = geometryData.link_bodies || {};
-            const jointHousings = geometryData.joint_housings || {};
+            const jointsData = geometryData.joints;
+            const jointEntries = Object.entries(jointsData);
+
+            // Build parent->children map to understand tree structure
+            const childrenOf = {}; // parent_link -> [{joint, child_link}]
+            const allChildLinks = new Set();
+            for (const [jname, jdata] of jointEntries) {
+                if (!childrenOf[jdata.parent]) childrenOf[jdata.parent] = [];
+                childrenOf[jdata.parent].push({ jointName: jname, ...jdata });
+                allChildLinks.add(jdata.child);
+            }
+
+            // Find root link (not a child of any joint)
+            const allParentLinks = new Set(jointEntries.map(([_, j]) => j.parent));
+            let rootLink = null;
+            for (const parent of allParentLinks) {
+                if (!allChildLinks.has(parent)) { rootLink = parent; break; }
+            }
+            if (!rootLink && jointEntries.length > 0) rootLink = jointEntries[0][1].parent;
+
+            // Map: link_name -> THREE.Object3D position (for FK updates)
+            const linkPositionMap = {};
+
+            // BFS through kinematic tree
+            const queue = [{ linkName: rootLink, worldPos: new THREE.Vector3(0, 0.04, 0) }];
+            linkPositionMap[rootLink] = new THREE.Vector3(0, 0.04, 0);
 
             // Base platform
-            const baseBody = linkBodies[Object.keys(linkBodies)[0]];
             const baseGeo = new THREE.CylinderGeometry(0.06, 0.07, 0.04, 32);
-            const baseMat = new THREE.MeshStandardMaterial({
-                color: 0x2a2a2a, metalness: 0.8, roughness: 0.2
-            });
+            const baseMat = new THREE.MeshStandardMaterial({ color: 0x2a2a2a, metalness: 0.8, roughness: 0.2 });
             const baseMesh = new THREE.Mesh(baseGeo, baseMat);
             baseMesh.position.y = 0.02;
             baseMesh.castShadow = true;
-            baseMesh.receiveShadow = true;
             robotGroup.add(baseMesh);
 
-            // Track joint positions for FK update
-            let cumulativePos = new THREE.Vector3(0, 0.04, 0);
+            // Root joint housing
+            const rootHousing = new THREE.Mesh(
+                new THREE.CylinderGeometry(0.035, 0.035, 0.03, 20),
+                new THREE.MeshStandardMaterial({ color: 0x4a7ab5, metalness: 0.6, roughness: 0.3 })
+            );
+            rootHousing.position.set(0, 0.04, 0);
+            rootHousing.castShadow = true;
+            robotGroup.add(rootHousing);
+            jointSpheres.push(rootHousing);
 
-            // First joint sphere (at base top)
-            const baseJointGeo = new THREE.CylinderGeometry(0.038, 0.038, 0.045, 24);
-            const baseJointMat = new THREE.MeshStandardMaterial({
-                color: 0x3a5a8a, metalness: 0.6, roughness: 0.3
-            });
-            const baseJoint = new THREE.Mesh(baseJointGeo, baseJointMat);
-            baseJoint.position.copy(cumulativePos);
-            baseJoint.castShadow = true;
-            robotGroup.add(baseJoint);
-            jointSpheres.push(baseJoint);
+            while (queue.length > 0) {
+                const { linkName, worldPos } = queue.shift();
+                const children = childrenOf[linkName] || [];
 
-            // Build each link as a proper body connecting joints
-            for (let i = 0; i < jointEntries.length; i++) {
-                const [jname, jdata] = jointEntries[i];
+                for (const child of children) {
+                    const ox = child.origin.x;
+                    const oy = child.origin.y;
+                    const oz = child.origin.z;
 
-                // Convert URDF offset (Z-up) to Three.js (Y-up)
-                const ox = jdata.origin.x;
-                const oy = jdata.origin.y;
-                const oz = jdata.origin.z;
-
-                const nextPos = cumulativePos.clone();
-                nextPos.x += ox;
-                nextPos.y += oz;  // Z -> Y
-                nextPos.z += -oy; // Y -> -Z
-
-                // Calculate link length
-                const dir = new THREE.Vector3().subVectors(nextPos, cumulativePos);
-                const linkLength = dir.length();
-
-                // Link body — thick cylinder
-                if (linkLength > 0.01) {
-                    const bodyRadius = Math.max(0.022, Math.min(0.04, linkLength * 0.16));
-                    const bodyGeo = new THREE.CylinderGeometry(bodyRadius, bodyRadius * 0.95, 1.0, 16); // height=1 for easy scaling
-                    const bodyMat = new THREE.MeshStandardMaterial({
-                        color: i % 2 === 0 ? 0x4a4a50 : 0x3a3a40,
-                        metalness: 0.7,
-                        roughness: 0.25,
-                    });
-                    const bodyMesh = new THREE.Mesh(bodyGeo, bodyMat);
-                    bodyMesh.castShadow = true;
-                    bodyMesh.receiveShadow = true;
-
-                    // Position at midpoint and scale to link length
-                    bodyMesh.position.set(
-                        (cumulativePos.x + nextPos.x) / 2,
-                        (cumulativePos.y + nextPos.y) / 2,
-                        (cumulativePos.z + nextPos.z) / 2
+                    // Convert URDF Z-up to Three.js Y-up
+                    const childPos = new THREE.Vector3(
+                        worldPos.x + ox,
+                        worldPos.y + oz,
+                        worldPos.z + (-oy)
                     );
-                    bodyMesh.scale.set(1, linkLength, 1);
 
-                    // Orient along link direction
-                    if (linkLength > 0.001) {
-                        const up = new THREE.Vector3(0, 1, 0);
-                        const quat = new THREE.Quaternion().setFromUnitVectors(up, dir.normalize());
-                        bodyMesh.quaternion.copy(quat);
+                    linkPositionMap[child.child] = childPos.clone();
+
+                    // Link body connecting parent to child
+                    const dir = new THREE.Vector3().subVectors(childPos, worldPos);
+                    const linkLength = dir.length();
+
+                    if (linkLength > 0.005) {
+                        const bodyRadius = Math.max(0.015, Math.min(0.035, linkLength * 0.15));
+                        const bodyGeo = new THREE.CylinderGeometry(bodyRadius, bodyRadius * 0.9, 1.0, 12);
+                        const bodyMat = new THREE.MeshStandardMaterial({
+                            color: 0x3a3a42, metalness: 0.7, roughness: 0.25
+                        });
+                        const bodyMesh = new THREE.Mesh(bodyGeo, bodyMat);
+                        bodyMesh.castShadow = true;
+
+                        // Position at midpoint, scale to length
+                        bodyMesh.position.set(
+                            (worldPos.x + childPos.x) / 2,
+                            (worldPos.y + childPos.y) / 2,
+                            (worldPos.z + childPos.z) / 2
+                        );
+                        bodyMesh.scale.set(1, linkLength, 1);
+
+                        if (linkLength > 0.001) {
+                            const up = new THREE.Vector3(0, 1, 0);
+                            const quat = new THREE.Quaternion().setFromUnitVectors(up, dir.clone().normalize());
+                            bodyMesh.quaternion.copy(quat);
+                        }
+
+                        robotGroup.add(bodyMesh);
+                        linkCylinders.push(bodyMesh);
                     }
 
-                    robotGroup.add(bodyMesh);
-                    linkCylinders.push(bodyMesh);
-                } else {
-                    // Placeholder for zero-length links
-                    linkCylinders.push(null);
+                    // Joint housing at child position
+                    let jointColor = 0x4a7ab5;
+                    if (Math.abs(child.axis.y) > 0.5) jointColor = 0x5aab5a;
+                    else if (Math.abs(child.axis.x) > 0.5) jointColor = 0xab5a4a;
+
+                    const housingGeo = new THREE.SphereGeometry(0.018, 12, 12);
+                    const housingMat = new THREE.MeshStandardMaterial({
+                        color: jointColor, metalness: 0.5, roughness: 0.35,
+                        emissive: jointColor, emissiveIntensity: 0.1
+                    });
+                    const housing = new THREE.Mesh(housingGeo, housingMat);
+                    housing.position.copy(childPos);
+                    housing.castShadow = true;
+                    housing.userData.linkName = child.child;
+                    robotGroup.add(housing);
+                    jointSpheres.push(housing);
+
+                    // Continue BFS
+                    queue.push({ linkName: child.child, worldPos: childPos });
                 }
-
-                // Joint housing at the connection point
-                const housingRadius = 0.035;
-                const housingLength = 0.04;
-                const housingGeo = new THREE.CylinderGeometry(housingRadius, housingRadius, housingLength, 20);
-
-                // Joint color based on axis
-                let jointColor;
-                if (Math.abs(jdata.axis.z) > 0.5) jointColor = 0x4a7ab5; // Z-axis: blue
-                else if (Math.abs(jdata.axis.y) > 0.5) jointColor = 0x5aab5a; // Y-axis: green
-                else jointColor = 0xab5a4a; // X-axis: red
-
-                const housingMat = new THREE.MeshStandardMaterial({
-                    color: jointColor, metalness: 0.5, roughness: 0.35
-                });
-                const housingMesh = new THREE.Mesh(housingGeo, housingMat);
-                housingMesh.position.copy(nextPos);
-                housingMesh.castShadow = true;
-
-                // Orient housing perpendicular to joint axis
-                if (Math.abs(jdata.axis.x) > 0.5) {
-                    housingMesh.rotation.z = Math.PI / 2;
-                } else if (Math.abs(jdata.axis.y) > 0.5) {
-                    housingMesh.rotation.x = Math.PI / 2;
-                }
-                // Z-axis: default cylinder orientation is fine
-
-                robotGroup.add(housingMesh);
-                jointSpheres.push(housingMesh);
-
-                // Add a ring/flange at each joint for visual clarity
-                const flangeGeo = new THREE.TorusGeometry(housingRadius + 0.005, 0.004, 8, 24);
-                const flangeMat = new THREE.MeshStandardMaterial({ color: 0x222222, metalness: 0.9, roughness: 0.1 });
-                const flange = new THREE.Mesh(flangeGeo, flangeMat);
-                flange.position.copy(nextPos);
-                flange.rotation.x = Math.PI / 2;
-                robotGroup.add(flange);
-
-                cumulativePos = nextPos;
             }
 
-            // End effector / tool flange
-            const eeGeo = new THREE.CylinderGeometry(0.025, 0.03, 0.015, 20);
-            const eeMat = new THREE.MeshStandardMaterial({ color: 0xcc3333, metalness: 0.5, roughness: 0.3 });
-            eeMesh = new THREE.Mesh(eeGeo, eeMat);
-            eeMesh.position.copy(cumulativePos);
-            eeMesh.position.y += 0.01;
-            eeMesh.castShadow = true;
-            robotGroup.add(eeMesh);
+            // End effector indicator on leaf nodes (links with no children)
+            for (const [linkName, pos] of Object.entries(linkPositionMap)) {
+                if (!childrenOf[linkName] || childrenOf[linkName].length === 0) {
+                    // This is a leaf — add small indicator
+                    const leafGeo = new THREE.SphereGeometry(0.01, 8, 8);
+                    const leafMat = new THREE.MeshStandardMaterial({ color: 0xcc3333, emissive: 0xcc3333, emissiveIntensity: 0.3 });
+                    const leaf = new THREE.Mesh(leafGeo, leafMat);
+                    leaf.position.copy(pos);
+                    robotGroup.add(leaf);
+                }
+            }
 
+            eeMesh = null; // No single end effector for tree structures
             scene.add(robotGroup);
 
-            // Attempt to load actual mesh files if available
+            // Attempt mesh loading
             if (meshBaseUrl && geometryData.mesh_files) {
                 loadMeshes(geometryData.mesh_files, meshBaseUrl);
             }
