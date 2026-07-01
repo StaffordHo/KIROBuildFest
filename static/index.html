@@ -199,6 +199,8 @@
     <!-- Three.js from CDN -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/STLLoader.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/ColladaLoader.js"></script>
 
     <script>
 
@@ -643,6 +645,7 @@
                 const data = await r.json();
                 robotId = data.robot_id;
                 robotJoints = data.joints.filter(j => !j.includes('fixed'));
+                const meshBaseUrl = data.mesh_base_url || '';
 
                 // Fetch geometry info for proper rendering
                 const geoResp = await fetch(`${API}/worlds/${worldId}/robots/${data.robot_id}/geometry`);
@@ -651,8 +654,8 @@
                     geometryData = await geoResp.json();
                 }
 
-                // Build visualization using real geometry
-                buildRobotFromGeometry(geometryData, data.joints, data.dof);
+                // Build visualization with mesh loading
+                buildRobotFromGeometry(geometryData, data.joints, data.dof, meshBaseUrl);
                 buildJointSliders(robotJoints);
                 document.getElementById('joints-section').style.display = 'block';
                 document.getElementById('drone-section').style.display = 'none';
@@ -669,10 +672,10 @@
             }
         }
 
-        function buildRobotFromGeometry(geometryData, joints, dof) {
+        function buildRobotFromGeometry(geometryData, joints, dof, meshBaseUrl) {
             /**
-             * Build robot visualization using actual URDF geometry.
-             * Uses joint origins to determine link lengths and positions.
+             * Build robot visualization using URDF geometry with auto-generated body shapes.
+             * Renders industrial-looking capsules/cylinders for links and joint housings.
              */
             if (robotGroup) scene.remove(robotGroup);
             robotGroup = new THREE.Group();
@@ -680,80 +683,203 @@
             jointSpheres = [];
 
             if (!geometryData || !geometryData.joints) {
-                // Fallback to generic arm
                 buildRobotVisual(joints, dof);
                 return;
             }
 
             const jointEntries = Object.entries(geometryData.joints);
-            const colors = [0x58a6ff, 0x3fb950, 0xd29922, 0xf78166, 0xbc8cff, 0x79c0ff, 0x56d4dd, 0xff7b72, 0xffa657];
+            const linkBodies = geometryData.link_bodies || {};
+            const jointHousings = geometryData.joint_housings || {};
 
-            // Base
-            const baseGeo = new THREE.CylinderGeometry(0.04, 0.05, 0.02, 32);
-            const baseMat = new THREE.MeshStandardMaterial({ color: 0x30363d, metalness: 0.7, roughness: 0.2 });
+            // Base platform
+            const baseBody = linkBodies[Object.keys(linkBodies)[0]];
+            const baseGeo = new THREE.CylinderGeometry(0.06, 0.07, 0.04, 32);
+            const baseMat = new THREE.MeshStandardMaterial({
+                color: 0x2a2a2a, metalness: 0.8, roughness: 0.2
+            });
             const baseMesh = new THREE.Mesh(baseGeo, baseMat);
-            baseMesh.position.y = 0.01;
+            baseMesh.position.y = 0.02;
             baseMesh.castShadow = true;
+            baseMesh.receiveShadow = true;
             robotGroup.add(baseMesh);
 
-            // Create joint spheres at correct initial positions using origin offsets
-            let cumulativePos = new THREE.Vector3(0, 0.02, 0); // Start above base
+            // Track joint positions for FK update
+            let cumulativePos = new THREE.Vector3(0, 0.04, 0);
 
-            // First sphere at base
-            const baseSphere = new THREE.Mesh(
-                new THREE.SphereGeometry(0.02, 16, 16),
-                new THREE.MeshStandardMaterial({ color: colors[0], emissive: colors[0], emissiveIntensity: 0.15 })
-            );
-            baseSphere.position.copy(cumulativePos);
-            baseSphere.castShadow = true;
-            robotGroup.add(baseSphere);
-            jointSpheres.push(baseSphere);
+            // First joint sphere (at base top)
+            const baseJointGeo = new THREE.CylinderGeometry(0.038, 0.038, 0.045, 24);
+            const baseJointMat = new THREE.MeshStandardMaterial({
+                color: 0x3a5a8a, metalness: 0.6, roughness: 0.3
+            });
+            const baseJoint = new THREE.Mesh(baseJointGeo, baseJointMat);
+            baseJoint.position.copy(cumulativePos);
+            baseJoint.castShadow = true;
+            robotGroup.add(baseJoint);
+            jointSpheres.push(baseJoint);
 
-            // Add spheres at each joint offset
+            // Build each link as a proper body connecting joints
             for (let i = 0; i < jointEntries.length; i++) {
                 const [jname, jdata] = jointEntries[i];
-                const color = colors[(i + 1) % colors.length];
 
-                // Accumulate offset (converting from URDF Z-up to Three.js Y-up)
+                // Convert URDF offset (Z-up) to Three.js (Y-up)
                 const ox = jdata.origin.x;
                 const oy = jdata.origin.y;
                 const oz = jdata.origin.z;
 
-                // URDF is Z-up, Three.js is Y-up: swap Y and Z
-                cumulativePos = cumulativePos.clone();
-                cumulativePos.x += ox;
-                cumulativePos.y += oz;  // Z-up -> Y-up
-                cumulativePos.z += -oy; // Y -> -Z in Three.js
+                const nextPos = cumulativePos.clone();
+                nextPos.x += ox;
+                nextPos.y += oz;  // Z -> Y
+                nextPos.z += -oy; // Y -> -Z
 
-                const sphere = new THREE.Mesh(
-                    new THREE.SphereGeometry(0.015, 16, 16),
-                    new THREE.MeshStandardMaterial({ color, emissive: color, emissiveIntensity: 0.15, metalness: 0.4, roughness: 0.4 })
-                );
-                sphere.position.copy(cumulativePos);
-                sphere.castShadow = true;
-                robotGroup.add(sphere);
-                jointSpheres.push(sphere);
+                // Calculate link length
+                const dir = new THREE.Vector3().subVectors(nextPos, cumulativePos);
+                const linkLength = dir.length();
 
-                // Link cylinder between this and previous sphere
-                const linkGeo = new THREE.CylinderGeometry(0.012, 0.012, 1, 12);
-                const linkMat = new THREE.MeshStandardMaterial({ color, metalness: 0.5, roughness: 0.3 });
-                const cyl = new THREE.Mesh(linkGeo, linkMat);
-                cyl.castShadow = true;
-                robotGroup.add(cyl);
-                linkCylinders.push(cyl);
+                // Link body — thick cylinder with rounded caps
+                if (linkLength > 0.01) {
+                    const bodyRadius = Math.max(0.022, Math.min(0.04, linkLength * 0.16));
+                    const bodyGeo = new THREE.CylinderGeometry(bodyRadius, bodyRadius * 0.95, linkLength * 0.85, 16);
+                    const bodyMat = new THREE.MeshStandardMaterial({
+                        color: i % 2 === 0 ? 0x4a4a50 : 0x3a3a40,
+                        metalness: 0.7,
+                        roughness: 0.25,
+                    });
+                    const bodyMesh = new THREE.Mesh(bodyGeo, bodyMat);
+                    bodyMesh.castShadow = true;
+                    bodyMesh.receiveShadow = true;
+
+                    // Position at midpoint
+                    bodyMesh.position.set(
+                        (cumulativePos.x + nextPos.x) / 2,
+                        (cumulativePos.y + nextPos.y) / 2,
+                        (cumulativePos.z + nextPos.z) / 2
+                    );
+
+                    // Orient along link direction
+                    if (linkLength > 0.001) {
+                        const up = new THREE.Vector3(0, 1, 0);
+                        const quat = new THREE.Quaternion().setFromUnitVectors(up, dir.normalize());
+                        bodyMesh.quaternion.copy(quat);
+                    }
+
+                    robotGroup.add(bodyMesh);
+                    linkCylinders.push(bodyMesh);
+                } else {
+                    // Placeholder for zero-length links
+                    linkCylinders.push(null);
+                }
+
+                // Joint housing at the connection point
+                const housingRadius = 0.035;
+                const housingLength = 0.04;
+                const housingGeo = new THREE.CylinderGeometry(housingRadius, housingRadius, housingLength, 20);
+
+                // Joint color based on axis
+                let jointColor;
+                if (Math.abs(jdata.axis.z) > 0.5) jointColor = 0x4a7ab5; // Z-axis: blue
+                else if (Math.abs(jdata.axis.y) > 0.5) jointColor = 0x5aab5a; // Y-axis: green
+                else jointColor = 0xab5a4a; // X-axis: red
+
+                const housingMat = new THREE.MeshStandardMaterial({
+                    color: jointColor, metalness: 0.5, roughness: 0.35
+                });
+                const housingMesh = new THREE.Mesh(housingGeo, housingMat);
+                housingMesh.position.copy(nextPos);
+                housingMesh.castShadow = true;
+
+                // Orient housing perpendicular to joint axis
+                if (Math.abs(jdata.axis.x) > 0.5) {
+                    housingMesh.rotation.z = Math.PI / 2;
+                } else if (Math.abs(jdata.axis.y) > 0.5) {
+                    housingMesh.rotation.x = Math.PI / 2;
+                }
+                // Z-axis: default cylinder orientation is fine
+
+                robotGroup.add(housingMesh);
+                jointSpheres.push(housingMesh);
+
+                // Add a ring/flange at each joint for visual clarity
+                const flangeGeo = new THREE.TorusGeometry(housingRadius + 0.005, 0.004, 8, 24);
+                const flangeMat = new THREE.MeshStandardMaterial({ color: 0x222222, metalness: 0.9, roughness: 0.1 });
+                const flange = new THREE.Mesh(flangeGeo, flangeMat);
+                flange.position.copy(nextPos);
+                flange.rotation.x = Math.PI / 2;
+                robotGroup.add(flange);
+
+                cumulativePos = nextPos;
             }
 
-            // End effector
-            eeMesh = new THREE.Mesh(
-                new THREE.BoxGeometry(0.035, 0.02, 0.035),
-                new THREE.MeshStandardMaterial({ color: 0xf85149, emissive: 0xf85149, emissiveIntensity: 0.3 })
-            );
+            // End effector / tool flange
+            const eeGeo = new THREE.CylinderGeometry(0.025, 0.03, 0.015, 20);
+            const eeMat = new THREE.MeshStandardMaterial({ color: 0xcc3333, metalness: 0.5, roughness: 0.3 });
+            eeMesh = new THREE.Mesh(eeGeo, eeMat);
             eeMesh.position.copy(cumulativePos);
+            eeMesh.position.y += 0.01;
             eeMesh.castShadow = true;
             robotGroup.add(eeMesh);
 
             scene.add(robotGroup);
-            updateCylinders();
+
+            // Attempt to load actual mesh files if available
+            if (meshBaseUrl && geometryData.mesh_files) {
+                loadMeshes(geometryData.mesh_files, meshBaseUrl);
+            }
+        }
+
+        function loadMeshes(meshFiles, meshBaseUrl) {
+            /**
+             * Attempt to load STL/DAE mesh files for accurate visual representation.
+             * Falls back silently to generated shapes if meshes can't be loaded.
+             */
+            const stlLoader = new THREE.STLLoader();
+
+            for (const [linkName, meshInfo] of Object.entries(meshFiles)) {
+                let filename = meshInfo.filename;
+
+                // Resolve package:// paths to raw GitHub URLs
+                if (filename.startsWith('package://')) {
+                    filename = filename.replace('package://', '');
+                }
+                // Remove leading ../ or ./
+                filename = filename.replace(/^(\.\.\/|\.\/)+/, '');
+
+                // Construct full URL
+                const fullUrl = meshBaseUrl + filename;
+
+                // Determine file type
+                const ext = filename.split('.').pop().toLowerCase();
+
+                if (ext === 'stl') {
+                    stlLoader.load(fullUrl, (geometry) => {
+                        const color = meshInfo.color || [0.5, 0.5, 0.5, 1.0];
+                        const material = new THREE.MeshStandardMaterial({
+                            color: new THREE.Color(color[0], color[1], color[2]),
+                            metalness: 0.4,
+                            roughness: 0.5,
+                        });
+                        const mesh = new THREE.Mesh(geometry, material);
+                        mesh.castShadow = true;
+                        mesh.receiveShadow = true;
+                        // Store for FK updates
+                        mesh.userData.linkName = linkName;
+                        robotGroup.add(mesh);
+                    }, undefined, (err) => {
+                        // Silently fail — we have the generated shapes as fallback
+                        console.log(`Mesh load skipped: ${linkName} (${ext})`);
+                    });
+                }
+                // DAE/Collada loading
+                else if (ext === 'dae' && THREE.ColladaLoader) {
+                    const colladaLoader = new THREE.ColladaLoader();
+                    colladaLoader.load(fullUrl, (collada) => {
+                        const model = collada.scene;
+                        model.userData.linkName = linkName;
+                        robotGroup.add(model);
+                    }, undefined, (err) => {
+                        console.log(`Mesh load skipped: ${linkName} (${ext})`);
+                    });
+                }
+            }
         }
 
         // ===================== DRONES =====================

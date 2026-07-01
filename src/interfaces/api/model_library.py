@@ -280,6 +280,7 @@ async def fetch_and_load_model(request: FetchModelRequest):
         "links": len(robot.links),
         "joints": list(robot.joints.keys()),
         "source": urdf_url,
+        "mesh_base_url": urdf_url.rsplit("/", 1)[0] + "/",  # Directory containing the URDF
     }
 
 

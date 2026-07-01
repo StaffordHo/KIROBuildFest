@@ -315,8 +315,8 @@ async def set_joint_commands(world_id: str, request: JointCommandRequest):
 async def get_robot_geometry(world_id: str, robot_id: str):
     """Get robot geometry data for 3D visualization.
 
-    Returns link dimensions, joint origins, and structure needed
-    to render the robot without mesh files.
+    Returns link dimensions, joint origins, and auto-generated
+    approximate body shapes for rendering without mesh files.
     """
     world = _worlds.get(world_id)
     if not world:
@@ -332,24 +332,9 @@ async def get_robot_geometry(world_id: str, robot_id: str):
         raise HTTPException(404, f"Robot '{robot_id}' not found")
 
     from ...domain.models.geometry import Box, Cylinder, Sphere
+    import math
 
-    links_data = {}
-    for link_name, link in robot.links.items():
-        link_info = {"name": link_name, "visuals": [], "collisions": []}
-
-        for vis in link.visuals:
-            geom_data = _serialize_geometry(vis.geometry)
-            if geom_data:
-                geom_data["color"] = list(vis.color) if vis.color else [0.5, 0.5, 0.5, 1.0]
-                link_info["visuals"].append(geom_data)
-
-        for col in link.collisions:
-            geom_data = _serialize_geometry(col.geometry)
-            if geom_data:
-                link_info["collisions"].append(geom_data)
-
-        links_data[link_name] = link_info
-
+    # Build joint structure
     joints_data = {}
     for joint_name, joint in robot.joints.items():
         joints_data[joint_name] = {
@@ -364,11 +349,86 @@ async def get_robot_geometry(world_id: str, robot_id: str):
             "axis": {"x": joint.axis.x, "y": joint.axis.y, "z": joint.axis.z},
         }
 
+    # Auto-generate approximate body shapes based on link offsets
+    # For each joint, create a cylinder/capsule that spans the offset distance
+    link_bodies = {}
+
+    # Base link gets a cylinder
+    base_link = robot.base_link
+    if base_link:
+        link_bodies[base_link.name] = {
+            "shape": "cylinder",
+            "radius": 0.06,
+            "length": 0.04,
+            "color": [0.25, 0.25, 0.25, 1.0],
+            "is_base": True,
+        }
+
+    # For each joint, generate a body for the child link
+    for joint_name, joint in robot.joints.items():
+        ox = joint.origin.position.x
+        oy = joint.origin.position.y
+        oz = joint.origin.position.z
+        offset_length = math.sqrt(ox*ox + oy*oy + oz*oz)
+
+        if offset_length < 0.001:
+            # Very short or zero offset — just a joint housing
+            link_bodies[joint.child_link] = {
+                "shape": "sphere",
+                "radius": 0.035,
+                "color": [0.3, 0.3, 0.35, 1.0],
+            }
+        else:
+            # Proportional cylinder — radius scales with offset length
+            radius = max(0.025, min(0.05, offset_length * 0.18))
+            link_bodies[joint.child_link] = {
+                "shape": "capsule",
+                "radius": radius,
+                "length": offset_length,
+                "color": [0.35, 0.38, 0.42, 1.0],  # Industrial grey-blue
+                "offset": {"x": ox, "y": oy, "z": oz},
+            }
+
+    # Assign colors that differentiate joints
+    joint_colors = [
+        [0.2, 0.4, 0.7, 1.0],   # Steel blue
+        [0.3, 0.5, 0.3, 1.0],   # Olive
+        [0.5, 0.3, 0.2, 1.0],   # Bronze
+        [0.4, 0.3, 0.5, 1.0],   # Purple-grey
+        [0.2, 0.5, 0.5, 1.0],   # Teal
+        [0.5, 0.4, 0.2, 1.0],   # Gold
+        [0.3, 0.3, 0.6, 1.0],   # Slate
+    ]
+
+    joint_housings = {}
+    for i, (joint_name, joint) in enumerate(robot.joints.items()):
+        if joint.is_actuated:
+            joint_housings[joint_name] = {
+                "shape": "cylinder",
+                "radius": 0.04,
+                "length": 0.05,
+                "color": joint_colors[i % len(joint_colors)],
+                "axis": {"x": joint.axis.x, "y": joint.axis.y, "z": joint.axis.z},
+            }
+
+    # Collect mesh references from visuals
+    mesh_files = {}
+    for link_name, link in robot.links.items():
+        for vis in link.visuals:
+            if vis.geometry and hasattr(vis.geometry, 'filename') and vis.geometry.filename:
+                mesh_files[link_name] = {
+                    "filename": vis.geometry.filename,
+                    "color": list(vis.color) if vis.color else [0.5, 0.5, 0.5, 1.0],
+                }
+
     return {
         "robot_id": str(robot.id),
         "name": robot.metadata.name,
-        "links": links_data,
+        "dof": robot.dof,
         "joints": joints_data,
+        "link_bodies": link_bodies,
+        "joint_housings": joint_housings,
+        "mesh_files": mesh_files,
     }
 
 
