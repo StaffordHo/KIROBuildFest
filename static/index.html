@@ -413,38 +413,75 @@
         }
 
         function updateRobotFromState(robotState) {
-            if (!robotState || !robotState.links) return;
+            if (!robotState || !robotState.links || !robotGroup) return;
 
-            // Collect all link positions from physics in order
-            const linkNames = Object.keys(robotState.links);
-            
-            // Map link positions to joint spheres
-            // Order: base_link, link_1, link_2, ..., link_N, end_effector
-            const orderedLinks = ['base_link'];
-            for (let i = 1; i <= jointSpheres.length - 1; i++) {
-                orderedLinks.push(`link_${i}`);
+            // Get ordered link positions from the physics engine
+            const linkEntries = Object.entries(robotState.links);
+            if (linkEntries.length === 0) return;
+
+            // Rebuild the robot position from live FK data
+            // We have jointSpheres[0]=base, jointSpheres[1..N]=joints
+            // and linkCylinders[0..N-1] connecting consecutive spheres
+
+            const positions = []; // Collect all link positions in order
+
+            // Sort links: base first, then by kinematic order
+            const baseLink = linkEntries.find(([name]) => name.includes('link_0') || name.includes('base'));
+            const otherLinks = linkEntries.filter(([name]) => !name.includes('link_0') && !name.includes('base'));
+
+            // Build ordered position list
+            if (baseLink) {
+                const [x, y, z] = baseLink[1].position;
+                positions.push(new THREE.Vector3(x, z, -y)); // Z-up to Y-up
             }
-            orderedLinks.push('end_effector');
-
-            for (let i = 0; i < orderedLinks.length && i < jointSpheres.length; i++) {
-                const linkName = orderedLinks[i];
-                const poseData = robotState.links[linkName];
-                if (poseData && poseData.position) {
+            for (const [name, poseData] of otherLinks) {
+                if (poseData.position) {
                     const [x, y, z] = poseData.position;
-                    // Convert from sim coords (Z-up) to Three.js (Y-up)
-                    jointSpheres[i].position.set(x, z, -y);
+                    positions.push(new THREE.Vector3(x, z, -y));
+                }
+            }
+
+            // Update joint sphere positions
+            for (let i = 0; i < Math.min(positions.length, jointSpheres.length); i++) {
+                jointSpheres[i].position.copy(positions[i]);
+            }
+
+            // Update link cylinders to stretch between consecutive positions
+            for (let i = 0; i < linkCylinders.length; i++) {
+                const cyl = linkCylinders[i];
+                if (!cyl) continue;
+                if (i >= positions.length - 1) break;
+
+                const start = positions[i];
+                const end = positions[i + 1];
+
+                // Midpoint
+                cyl.position.set(
+                    (start.x + end.x) / 2,
+                    (start.y + end.y) / 2,
+                    (start.z + end.z) / 2
+                );
+
+                // Length and orientation
+                const dir = new THREE.Vector3().subVectors(end, start);
+                const length = dir.length();
+
+                if (length > 0.001) {
+                    // Scale cylinder to link length
+                    const originalLength = cyl.geometry.parameters.height || 1;
+                    cyl.scale.set(1, length / originalLength, 1);
+
+                    // Orient along direction
+                    const up = new THREE.Vector3(0, 1, 0);
+                    const quat = new THREE.Quaternion().setFromUnitVectors(up, dir.normalize());
+                    cyl.quaternion.copy(quat);
                 }
             }
 
             // Update end effector
-            const eePose = robotState.links['end_effector'];
-            if (eePose && eePose.position && eeMesh) {
-                const [x, y, z] = eePose.position;
-                eeMesh.position.set(x, z, -y);
+            if (eeMesh && positions.length > 0) {
+                eeMesh.position.copy(positions[positions.length - 1]);
             }
-
-            // Recompute cylinder positions between spheres
-            updateCylinders();
         }
 
         // ===================== API CALLS =====================
@@ -738,10 +775,10 @@
                 const dir = new THREE.Vector3().subVectors(nextPos, cumulativePos);
                 const linkLength = dir.length();
 
-                // Link body — thick cylinder with rounded caps
+                // Link body — thick cylinder
                 if (linkLength > 0.01) {
                     const bodyRadius = Math.max(0.022, Math.min(0.04, linkLength * 0.16));
-                    const bodyGeo = new THREE.CylinderGeometry(bodyRadius, bodyRadius * 0.95, linkLength * 0.85, 16);
+                    const bodyGeo = new THREE.CylinderGeometry(bodyRadius, bodyRadius * 0.95, 1.0, 16); // height=1 for easy scaling
                     const bodyMat = new THREE.MeshStandardMaterial({
                         color: i % 2 === 0 ? 0x4a4a50 : 0x3a3a40,
                         metalness: 0.7,
@@ -751,12 +788,13 @@
                     bodyMesh.castShadow = true;
                     bodyMesh.receiveShadow = true;
 
-                    // Position at midpoint
+                    // Position at midpoint and scale to link length
                     bodyMesh.position.set(
                         (cumulativePos.x + nextPos.x) / 2,
                         (cumulativePos.y + nextPos.y) / 2,
                         (cumulativePos.z + nextPos.z) / 2
                     );
+                    bodyMesh.scale.set(1, linkLength, 1);
 
                     // Orient along link direction
                     if (linkLength > 0.001) {
