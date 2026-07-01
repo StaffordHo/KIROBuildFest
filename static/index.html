@@ -92,6 +92,16 @@
         <p class="subtitle">Open Robotics Simulation Platform</p>
 
         <div class="section">
+            <div class="section-title">Scenarios</div>
+            <div class="btn-group">
+                <button onclick="loadScenario('pick_place')" style="font-size:11px;">📦 Pick & Place</button>
+                <button onclick="loadScenario('warehouse_sort')" style="font-size:11px;">🏭 Warehouse Sort</button>
+                <button onclick="loadScenario('quadruped_nav')" style="font-size:11px;">🐕 Quad Nav</button>
+                <button onclick="loadScenario('drone_survey')" style="font-size:11px;">🚁 Drone Survey</button>
+            </div>
+        </div>
+
+        <div class="section">
             <div class="section-title">Environment</div>
             <div class="btn-group">
                 <button onclick="loadEnvironment('tabletop')">🪑 Tabletop</button>
@@ -1310,6 +1320,174 @@ for (let i = 0; i < joints.length; i++) {
 }`,
             };
             document.getElementById('code-editor').value = presets[name] || '';
+        }
+
+        // ===================== SCENARIOS =====================
+        async function loadScenario(name) {
+            // Each scenario auto-loads: environment + robot + algorithm
+            stopAlgorithm();
+
+            if (!worldId) await createWorld();
+
+            if (name === 'pick_place') {
+                // Arm doing pick and place on tabletop
+                loadEnvironment('tabletop');
+                document.getElementById('model-select').value = 'kuka_iiwa';
+                await loadFromLibrary();
+
+                // Load pick-and-place algorithm
+                document.getElementById('code-editor').value = `// Pick & Place: Arm reaches to object, grasps, moves to target
+const phase = t % 8; // 8-second cycle
+if (phase < 2) {
+    // Reach toward object
+    positions[joints[0]] = sin(t * 0.8) * 0.5;
+    positions[joints[1]] = -0.3 + sin(t * 0.5) * 0.2;
+    positions[joints[2]] = 0.4;
+    positions[joints[3]] = sin(t * 0.8) * 0.3;
+    for (let i = 4; i < joints.length; i++) positions[joints[i]] = sin(t + i) * 0.2;
+} else if (phase < 4) {
+    // Grasp (hold position)
+    positions[joints[0]] = 0.5;
+    positions[joints[1]] = -0.5;
+    positions[joints[2]] = 0.4;
+    positions[joints[3]] = 0.3;
+    for (let i = 4; i < joints.length; i++) positions[joints[i]] = 0.1;
+} else if (phase < 6) {
+    // Move to place location
+    positions[joints[0]] = -0.5 + sin(t * 0.5) * 0.1;
+    positions[joints[1]] = -0.3;
+    positions[joints[2]] = 0.5;
+    positions[joints[3]] = -0.3;
+    for (let i = 4; i < joints.length; i++) positions[joints[i]] = cos(t + i) * 0.2;
+} else {
+    // Return home
+    for (let i = 0; i < joints.length; i++) {
+        positions[joints[i]] = sin(t * 0.3 + i * 0.3) * 0.1;
+    }
+}`;
+                setTimeout(() => runAlgorithm(), 500);
+                setStatus('running', 'Scenario: Pick & Place');
+
+            } else if (name === 'warehouse_sort') {
+                // Arm sorting in warehouse
+                loadEnvironment('warehouse');
+                document.getElementById('model-select').value = 'panda_franka';
+                await loadFromLibrary();
+
+                document.getElementById('code-editor').value = `// Warehouse Sorting: Arm scans and sorts packages
+const cycle = t % 10;
+const baseAngle = sin(t * 0.4) * 1.2; // Sweep base
+positions[joints[0]] = baseAngle;
+
+if (cycle < 3) {
+    // Scan left shelf
+    positions[joints[1]] = -0.4;
+    positions[joints[2]] = 0.3 + sin(t * 2) * 0.1;
+    positions[joints[3]] = 0.5;
+    positions[joints[4]] = sin(t * 1.5) * 0.3;
+} else if (cycle < 5) {
+    // Pick from shelf
+    positions[joints[1]] = -0.7;
+    positions[joints[2]] = 0.5;
+    positions[joints[3]] = 0.8;
+    positions[joints[4]] = 0.2;
+} else if (cycle < 7) {
+    // Move to sorting area
+    positions[joints[0]] = -baseAngle;
+    positions[joints[1]] = -0.3;
+    positions[joints[2]] = 0.2;
+    positions[joints[3]] = 0.4;
+    positions[joints[4]] = cos(t) * 0.2;
+} else {
+    // Place and return
+    positions[joints[1]] = -0.5;
+    positions[joints[2]] = 0.6;
+    positions[joints[3]] = 0.3;
+    for (let i = 4; i < joints.length; i++) {
+        positions[joints[i]] = sin(t * 0.5 + i) * 0.15;
+    }
+}
+for (let i = 5; i < joints.length; i++) {
+    positions[joints[i]] = sin(t * 2 + i * 0.5) * 0.3;
+}`;
+                setTimeout(() => runAlgorithm(), 500);
+                setStatus('running', 'Scenario: Warehouse Sort');
+
+            } else if (name === 'quadruped_nav') {
+                // Quadruped navigating outdoor environment
+                loadEnvironment('outdoor');
+                document.getElementById('model-select').value = 'a1';
+                await loadFromLibrary();
+
+                document.getElementById('code-editor').value = `// Quadruped Walking Gait: Trot pattern
+// A1 has 4 legs x 3 joints: hip, thigh, calf
+const gaitFreq = 3.0; // Hz
+const stride = 0.4;
+
+for (let i = 0; i < joints.length; i++) {
+    const legIndex = Math.floor(i / 3);
+    const jointIndex = i % 3;
+    
+    // Diagonal pairs move together (trot gait)
+    const phase = (legIndex === 0 || legIndex === 3) ? 0 : pi;
+    
+    if (jointIndex === 0) {
+        // Hip: lateral swing
+        positions[joints[i]] = sin(t * gaitFreq + phase) * 0.15;
+    } else if (jointIndex === 1) {
+        // Thigh: forward/back swing
+        positions[joints[i]] = 0.4 + sin(t * gaitFreq + phase) * stride;
+    } else {
+        // Calf: lift and extend
+        positions[joints[i]] = -0.8 + abs(sin(t * gaitFreq + phase)) * 0.3;
+    }
+}`;
+                setTimeout(() => runAlgorithm(), 500);
+                setStatus('running', 'Scenario: Quadruped Navigation');
+
+            } else if (name === 'drone_survey') {
+                // Drone surveying warehouse
+                loadEnvironment('warehouse');
+
+                // Clear previous models
+                if (robotGroup) { scene.remove(robotGroup); robotGroup = null; }
+                robotGroup = new THREE.Group();
+                scene.add(robotGroup);
+
+                await addDrone('quadcopter');
+
+                // Auto-fly pattern
+                document.getElementById('slider-thrust').value = '0.55';
+                onDroneSlider();
+
+                // Fly the drone in a survey pattern
+                let droneAlgo = setInterval(async () => {
+                    const dt = Date.now() / 1000;
+                    const thrust = 0.53 + sin(dt * 0.5) * 0.02;
+                    const roll = sin(dt * 0.3) * 0.15;
+                    const pitch = cos(dt * 0.2) * 0.1;
+                    const yaw = sin(dt * 0.1) * 0.2;
+
+                    document.getElementById('slider-thrust').value = thrust;
+                    document.getElementById('slider-roll').value = roll;
+                    document.getElementById('slider-pitch').value = pitch;
+                    document.getElementById('slider-yaw').value = yaw;
+                    document.getElementById('val-thrust').textContent = thrust.toFixed(2);
+                    document.getElementById('val-roll').textContent = roll.toFixed(2);
+                    document.getElementById('val-pitch').textContent = pitch.toFixed(2);
+                    document.getElementById('val-yaw').textContent = yaw.toFixed(2);
+
+                    await fetch(`${API}/api/drones/command`, {
+                        method: 'POST',
+                        headers: {'Content-Type': 'application/json'},
+                        body: JSON.stringify({ drone_id: droneId, thrust, roll, pitch, yaw_rate: yaw })
+                    });
+                }, 100);
+
+                // Store for cleanup
+                window._droneAlgo = droneAlgo;
+                setStatus('running', 'Scenario: Drone Survey');
+            }
         }
 
         // ===================== ENVIRONMENTS =====================
