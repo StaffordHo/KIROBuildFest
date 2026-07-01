@@ -56,6 +56,17 @@ class SimplePhysicsEngine(PhysicsEnginePort):
         joint_info = {}
 
         for name, joint in robot.joints.items():
+            # Store ALL joints (including fixed) for FK computation
+            joint_info[name] = {
+                "type": joint.joint_type,
+                "limits": joint.limits,
+                "damping": joint.damping,
+                "axis": joint.axis,
+                "origin": joint.origin,
+                "parent_link": joint.parent_link,
+                "child_link": joint.child_link,
+            }
+            # Only actuated joints get state/targets
             if joint.is_actuated:
                 joint_states[name] = JointState(
                     position=joint.state.position,
@@ -63,15 +74,6 @@ class SimplePhysicsEngine(PhysicsEnginePort):
                     effort=0.0,
                 )
                 joint_targets[name] = joint.state.position
-                joint_info[name] = {
-                    "type": joint.joint_type,
-                    "limits": joint.limits,
-                    "damping": joint.damping,
-                    "axis": joint.axis,
-                    "origin": joint.origin,
-                    "parent_link": joint.parent_link,
-                    "child_link": joint.child_link,
-                }
 
         self._robots[robot_id] = _RobotState(
             robot_id=str(robot.id),
