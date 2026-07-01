@@ -103,6 +103,47 @@
                 <button onclick="addRobot(6)">6-DOF Arm</button>
                 <button onclick="addRobot(9)">9-DOF Arm</button>
             </div>
+            <div class="btn-group" style="margin-top:6px;">
+                <button onclick="addDrone('quadcopter')">🚁 Quadcopter</button>
+                <button onclick="addDrone('hexacopter')">🚁 Hexacopter</button>
+            </div>
+            <div class="btn-group" style="margin-top:6px;">
+                <button onclick="addMobileRobot('differential')">🤖 Diff Drive</button>
+                <button onclick="addMobileRobot('ackermann')">🚗 Ackermann</button>
+                <button onclick="addMobileRobot('omnidirectional')">⊕ Omni</button>
+            </div>
+        </div>
+
+        <div class="section" id="drone-section" style="display:none;">
+            <div class="section-title">Drone Control</div>
+            <div class="joint-slider">
+                <label><span>Thrust</span><span id="val-thrust">0.00</span></label>
+                <input type="range" min="0" max="1" step="0.01" value="0" id="slider-thrust" oninput="onDroneSlider()">
+            </div>
+            <div class="joint-slider">
+                <label><span>Roll</span><span id="val-roll">0.00</span></label>
+                <input type="range" min="-1" max="1" step="0.01" value="0" id="slider-roll" oninput="onDroneSlider()">
+            </div>
+            <div class="joint-slider">
+                <label><span>Pitch</span><span id="val-pitch">0.00</span></label>
+                <input type="range" min="-1" max="1" step="0.01" value="0" id="slider-pitch" oninput="onDroneSlider()">
+            </div>
+            <div class="joint-slider">
+                <label><span>Yaw</span><span id="val-yaw">0.00</span></label>
+                <input type="range" min="-1" max="1" step="0.01" value="0" id="slider-yaw" oninput="onDroneSlider()">
+            </div>
+        </div>
+
+        <div class="section" id="mobile-section" style="display:none;">
+            <div class="section-title">Mobile Robot Control</div>
+            <div class="joint-slider">
+                <label><span>Forward</span><span id="val-linear">0.00</span></label>
+                <input type="range" min="-1" max="1" step="0.01" value="0" id="slider-linear" oninput="onMobileSlider()">
+            </div>
+            <div class="joint-slider">
+                <label><span>Turn</span><span id="val-angular">0.00</span></label>
+                <input type="range" min="-2" max="2" step="0.01" value="0" id="slider-angular" oninput="onMobileSlider()">
+            </div>
         </div>
 
         <div class="section" id="joints-section" style="display:none;">
@@ -463,8 +504,8 @@
                     document.getElementById('sim-time').textContent = msg.sim_time.toFixed(2) + 's';
                     document.getElementById('sim-steps').textContent = msg.step_count;
 
-                    // Update 3D visualization
-                    for (const [rid, robotState] of Object.entries(msg.robots)) {
+                    // Update arm visualization
+                    for (const [rid, robotState] of Object.entries(msg.robots || {})) {
                         updateRobotFromState(robotState);
 
                         // Update telemetry
@@ -474,6 +515,31 @@
                             telemetry += `${jname}: ${jstate.position.toFixed(3)} rad\n`;
                         }
                         document.getElementById('telemetry').textContent = telemetry || 'No data';
+                    }
+
+                    // Update drones
+                    if (msg.drones) {
+                        updateDroneFromState(msg.drones);
+                        // Telemetry for drones
+                        for (const [did, state] of Object.entries(msg.drones)) {
+                            let t = `Drone: ${did.slice(0,8)}\n`;
+                            t += `Alt: ${state.position[2].toFixed(2)}m\n`;
+                            t += `Vel: [${state.velocity.map(v=>v.toFixed(2)).join(', ')}]\n`;
+                            t += `Battery: ${state.battery.toFixed(1)}%\n`;
+                            document.getElementById('telemetry').textContent = t;
+                        }
+                    }
+
+                    // Update mobile robots
+                    if (msg.mobile_robots) {
+                        updateMobileRobotFromState(msg.mobile_robots);
+                        for (const [rid, state] of Object.entries(msg.mobile_robots)) {
+                            let t = `Mobile Robot\n`;
+                            t += `Pos: (${state.position[0].toFixed(2)}, ${state.position[1].toFixed(2)})\n`;
+                            t += `Heading: ${(state.heading * 180 / Math.PI).toFixed(1)}°\n`;
+                            t += `Speed: ${state.linear_velocity.toFixed(2)} m/s\n`;
+                            document.getElementById('telemetry').textContent = t;
+                        }
                     }
                 }
             };
@@ -527,6 +593,210 @@
             else dot.classList.add('red');
             
             statusText.textContent = text;
+        }
+
+        // ===================== DRONES =====================
+        let droneId = null;
+        let droneMesh = null;
+        let rotorMeshes = [];
+
+        async function addDrone(type) {
+            if (!worldId) { await createWorld(); }
+            const r = await fetch(`${API}/api/drones`, {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({ name: type, drone_type: type })
+            });
+            const data = await r.json();
+            droneId = data.drone_id;
+            buildDroneVisual(data.num_rotors);
+            document.getElementById('drone-section').style.display = 'block';
+            document.getElementById('joints-section').style.display = 'none';
+            document.getElementById('mobile-section').style.display = 'none';
+            setStatus('idle', `${type} drone added (${data.num_rotors} rotors)`);
+            // Auto-start sim
+            controlSim('start');
+        }
+
+        function buildDroneVisual(numRotors) {
+            if (droneMesh) robotGroup.remove(droneMesh);
+            if (!robotGroup) { robotGroup = new THREE.Group(); scene.add(robotGroup); }
+
+            droneMesh = new THREE.Group();
+            rotorMeshes = [];
+
+            // Body
+            const bodyGeo = new THREE.BoxGeometry(0.08, 0.03, 0.08);
+            const bodyMat = new THREE.MeshStandardMaterial({ color: 0x333333, metalness: 0.6, roughness: 0.3 });
+            const body = new THREE.Mesh(bodyGeo, bodyMat);
+            body.castShadow = true;
+            droneMesh.add(body);
+
+            // Arms and rotors
+            const armLength = 0.18;
+            for (let i = 0; i < numRotors; i++) {
+                const angle = (i / numRotors) * Math.PI * 2;
+                const x = Math.cos(angle) * armLength;
+                const z = Math.sin(angle) * armLength;
+
+                // Arm
+                const armGeo = new THREE.CylinderGeometry(0.008, 0.008, armLength, 8);
+                const armMat = new THREE.MeshStandardMaterial({ color: 0x555555 });
+                const arm = new THREE.Mesh(armGeo, armMat);
+                arm.position.set(x / 2, 0, z / 2);
+                arm.rotation.z = Math.PI / 2;
+                arm.lookAt(x, 0, z);
+                arm.rotateX(Math.PI / 2);
+                droneMesh.add(arm);
+
+                // Rotor disc
+                const rotorGeo = new THREE.CylinderGeometry(0.06, 0.06, 0.005, 16);
+                const rotorMat = new THREE.MeshStandardMaterial({ 
+                    color: i % 2 === 0 ? 0x58a6ff : 0x3fb950, 
+                    transparent: true, opacity: 0.6 
+                });
+                const rotor = new THREE.Mesh(rotorGeo, rotorMat);
+                rotor.position.set(x, 0.02, z);
+                droneMesh.add(rotor);
+                rotorMeshes.push(rotor);
+            }
+
+            // LED indicator
+            const ledGeo = new THREE.SphereGeometry(0.01, 8, 8);
+            const ledMat = new THREE.MeshStandardMaterial({ color: 0x00ff00, emissive: 0x00ff00, emissiveIntensity: 0.8 });
+            const led = new THREE.Mesh(ledGeo, ledMat);
+            led.position.set(0.04, 0.02, 0);
+            droneMesh.add(led);
+
+            droneMesh.position.set(0, 0.02, 0);
+            robotGroup.add(droneMesh);
+        }
+
+        async function onDroneSlider() {
+            if (!droneId) return;
+            const thrust = parseFloat(document.getElementById('slider-thrust').value);
+            const roll = parseFloat(document.getElementById('slider-roll').value);
+            const pitch = parseFloat(document.getElementById('slider-pitch').value);
+            const yaw = parseFloat(document.getElementById('slider-yaw').value);
+
+            document.getElementById('val-thrust').textContent = thrust.toFixed(2);
+            document.getElementById('val-roll').textContent = roll.toFixed(2);
+            document.getElementById('val-pitch').textContent = pitch.toFixed(2);
+            document.getElementById('val-yaw').textContent = yaw.toFixed(2);
+
+            await fetch(`${API}/api/drones/command`, {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({ drone_id: droneId, thrust, roll, pitch, yaw_rate: yaw })
+            });
+        }
+
+        // ===================== MOBILE ROBOTS =====================
+        let mobileRobotId = null;
+        let mobileRobotMesh = null;
+
+        async function addMobileRobot(type) {
+            if (!worldId) { await createWorld(); }
+            const r = await fetch(`${API}/api/mobile-robots`, {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({ name: type + '_bot', drive_type: type })
+            });
+            const data = await r.json();
+            mobileRobotId = data.robot_id;
+            buildMobileRobotVisual(type);
+            document.getElementById('mobile-section').style.display = 'block';
+            document.getElementById('joints-section').style.display = 'none';
+            document.getElementById('drone-section').style.display = 'none';
+            setStatus('idle', `${type} mobile robot added`);
+            controlSim('start');
+        }
+
+        function buildMobileRobotVisual(type) {
+            if (mobileRobotMesh) robotGroup.remove(mobileRobotMesh);
+            if (!robotGroup) { robotGroup = new THREE.Group(); scene.add(robotGroup); }
+
+            mobileRobotMesh = new THREE.Group();
+
+            // Body
+            const bodyGeo = new THREE.BoxGeometry(0.3, 0.1, 0.2);
+            const bodyMat = new THREE.MeshStandardMaterial({ color: 0x2d4059, metalness: 0.3, roughness: 0.5 });
+            const body = new THREE.Mesh(bodyGeo, bodyMat);
+            body.position.y = 0.06;
+            body.castShadow = true;
+            mobileRobotMesh.add(body);
+
+            // Wheels
+            const wheelGeo = new THREE.CylinderGeometry(0.04, 0.04, 0.02, 16);
+            const wheelMat = new THREE.MeshStandardMaterial({ color: 0x111111, roughness: 0.8 });
+
+            const wheelPositions = [
+                [0.1, 0.04, 0.11], [0.1, 0.04, -0.11],
+                [-0.1, 0.04, 0.11], [-0.1, 0.04, -0.11],
+            ];
+            for (const [wx, wy, wz] of wheelPositions) {
+                const wheel = new THREE.Mesh(wheelGeo, wheelMat);
+                wheel.position.set(wx, wy, wz);
+                wheel.rotation.x = Math.PI / 2;
+                mobileRobotMesh.add(wheel);
+            }
+
+            // Direction indicator
+            const arrowGeo = new THREE.ConeGeometry(0.02, 0.05, 8);
+            const arrowMat = new THREE.MeshStandardMaterial({ color: 0xf85149 });
+            const arrow = new THREE.Mesh(arrowGeo, arrowMat);
+            arrow.position.set(0.17, 0.1, 0);
+            arrow.rotation.z = -Math.PI / 2;
+            mobileRobotMesh.add(arrow);
+
+            robotGroup.add(mobileRobotMesh);
+        }
+
+        async function onMobileSlider() {
+            if (!mobileRobotId) return;
+            const linear = parseFloat(document.getElementById('slider-linear').value);
+            const angular = parseFloat(document.getElementById('slider-angular').value);
+
+            document.getElementById('val-linear').textContent = linear.toFixed(2);
+            document.getElementById('val-angular').textContent = angular.toFixed(2);
+
+            await fetch(`${API}/api/mobile-robots/command`, {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({ robot_id: mobileRobotId, linear_x: linear, angular_z: angular })
+            });
+        }
+
+        // ===================== UPDATE FROM WEBSOCKET =====================
+        function updateDroneFromState(droneState) {
+            if (!droneMesh || !droneState) return;
+            for (const [did, state] of Object.entries(droneState)) {
+                if (state.position) {
+                    const [x, y, z] = state.position;
+                    droneMesh.position.set(x, z, -y);
+                }
+                if (state.orientation) {
+                    const [qx, qy, qz, qw] = state.orientation;
+                    droneMesh.quaternion.set(qx, qz, -qy, qw);
+                }
+                // Spin rotors
+                for (const rotor of rotorMeshes) {
+                    rotor.rotation.y += 0.5;
+                }
+            }
+        }
+
+        function updateMobileRobotFromState(mobileState) {
+            if (!mobileRobotMesh || !mobileState) return;
+            for (const [rid, state] of Object.entries(mobileState)) {
+                if (state.position) {
+                    const [x, y, z] = state.position;
+                    mobileRobotMesh.position.set(x, z || 0, -y);
+                }
+                if (state.heading !== undefined) {
+                    mobileRobotMesh.rotation.y = -state.heading;
+                }
+            }
         }
 
         // ===================== INIT =====================

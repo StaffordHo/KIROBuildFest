@@ -85,6 +85,11 @@ async def root():
     return {"message": "RoboSim API. Visit /docs for API documentation."}
 
 
+# Register robot types router
+from .robot_types import router as robot_types_router, step_all as step_all_robots
+app.include_router(robot_types_router, prefix="/api", tags=["Robot Types"])
+
+
 # --- REST Endpoints ---
 
 @app.get("/health")
@@ -369,14 +374,22 @@ async def _simulation_loop(world_id: str):
     step_counter = 0
 
     while world.is_running:
-        # Step physics
+        # Step arm physics
         sim.step(world)
+
+        # Step drones + mobile robots + tasks
+        extra_state = step_all_robots(target_dt)
+
         step_counter += 1
 
         # Stream state to WebSocket clients at reduced rate
         if step_counter >= steps_per_stream:
             step_counter = 0
             state = _build_state_snapshot(world_id, world, engine)
+            # Merge in drone/mobile robot state
+            state["drones"] = extra_state.get("drones", {})
+            state["mobile_robots"] = extra_state.get("mobile_robots", {})
+            state["tasks"] = extra_state.get("tasks", {})
             await _broadcast(world_id, state)
 
         # Yield to event loop
