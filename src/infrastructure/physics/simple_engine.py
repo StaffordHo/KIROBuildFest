@@ -198,11 +198,15 @@ class SimplePhysicsEngine(PhysicsEnginePort):
         self._robots.clear()
 
     def _compute_fk(self, robot_state: _RobotState) -> dict[str, tuple]:
-        """Compute forward kinematics for all links using proper transform chaining."""
+        """Compute forward kinematics using cumulative rotation matrices.
+
+        Each joint's rotation affects ALL descendant links, not just
+        the immediate child. We track a 3x3 rotation matrix per link.
+        """
         poses = {}
+        rotations = {}  # link_name -> 3x3 rotation matrix (as flat list)
         robot = robot_state.robot
 
-        # Find base link
         base = robot.base_link
         if not base:
             return poses
@@ -213,89 +217,99 @@ class SimplePhysicsEngine(PhysicsEnginePort):
             robot.base_pose.position.z,
         ]
         poses[base.name] = (base_pos, [0, 0, 0, 1])
+        # Identity rotation matrix [row-major]
+        rotations[base.name] = [1,0,0, 0,1,0, 0,0,1]
 
-        # BFS through kinematic tree - accumulate transforms
         processed = {base.name}
         queue = [base.name]
 
         while queue:
             parent_name = queue.pop(0)
             parent_pos = poses[parent_name][0]
+            parent_rot = rotations[parent_name]
 
             for joint_name, info in robot_state.joint_info.items():
                 if info["parent_link"] == parent_name and info["child_link"] not in processed:
                     child_name = info["child_link"]
                     origin = info["origin"]
+                    jtype = info["type"]
+                    axis = info["axis"]
 
-                    # Joint origin offset (in parent frame)
                     ox = origin.position.x
                     oy = origin.position.y
                     oz = origin.position.z
 
-                    # Get joint angle
                     q = robot_state.joint_states.get(joint_name)
                     q_val = q.position if q else 0.0
 
-                    jtype = info["type"]
-                    axis = info["axis"]
+                    # Compute joint rotation matrix
+                    if jtype in (JointType.REVOLUTE, JointType.CONTINUOUS):
+                        joint_rot = self._rotation_matrix(axis.x, axis.y, axis.z, q_val)
+                    else:
+                        joint_rot = [1,0,0, 0,1,0, 0,0,1]
 
-                    # Compute child position:
-                    # Position = parent_pos + origin_offset (rotated by joint angle around axis)
-                    # For revolute joints, the offset itself doesn't rotate,
-                    # but subsequent children will be affected
+                    # Child rotation = parent_rot * joint_rot
+                    child_rot = self._mat_mul(parent_rot, joint_rot)
+
+                    # Transform origin offset by parent rotation
+                    rotated_offset = self._mat_vec(parent_rot, [ox, oy, oz])
+
+                    # For prismatic, add joint displacement along axis in world frame
+                    if jtype == JointType.PRISMATIC:
+                        axis_world = self._mat_vec(parent_rot, [axis.x, axis.y, axis.z])
+                        rotated_offset[0] += q_val * axis_world[0]
+                        rotated_offset[1] += q_val * axis_world[1]
+                        rotated_offset[2] += q_val * axis_world[2]
+
                     child_pos = [
-                        parent_pos[0] + ox,
-                        parent_pos[1] + oy,
-                        parent_pos[2] + oz,
+                        parent_pos[0] + rotated_offset[0],
+                        parent_pos[1] + rotated_offset[1],
+                        parent_pos[2] + rotated_offset[2],
                     ]
 
-                    if jtype == JointType.PRISMATIC:
-                        child_pos[0] += q_val * axis.x
-                        child_pos[1] += q_val * axis.y
-                        child_pos[2] += q_val * axis.z
-
-                    # For revolute: rotate the offset of SUBSEQUENT children
-                    # We store a cumulative rotation per link (simplified approach)
-                    child_orn = [0, 0, 0, 1]
-                    if jtype in (JointType.REVOLUTE, JointType.CONTINUOUS) and abs(q_val) > 0.001:
-                        # Apply rotation: for Z-axis rotation, rotate in XY plane
-                        cos_q = math.cos(q_val)
-                        sin_q = math.sin(q_val)
-
-                        # Rotate the offset from parent based on axis
-                        if abs(axis.z) > 0.5:
-                            # Rotation around Z: affects X,Y
-                            rx = ox * cos_q - oy * sin_q
-                            ry = ox * sin_q + oy * cos_q
-                            child_pos = [
-                                parent_pos[0] + rx,
-                                parent_pos[1] + ry,
-                                parent_pos[2] + oz,
-                            ]
-                        elif abs(axis.y) > 0.5:
-                            # Rotation around Y: affects X,Z
-                            rx = ox * cos_q + oz * sin_q
-                            rz = -ox * sin_q + oz * cos_q
-                            child_pos = [
-                                parent_pos[0] + rx,
-                                parent_pos[1] + oy,
-                                parent_pos[2] + rz,
-                            ]
-                        elif abs(axis.x) > 0.5:
-                            # Rotation around X: affects Y,Z
-                            ry = oy * cos_q - oz * sin_q
-                            rz = oy * sin_q + oz * cos_q
-                            child_pos = [
-                                parent_pos[0] + ox,
-                                parent_pos[1] + ry,
-                                parent_pos[2] + rz,
-                            ]
-
-                    poses[child_name] = (child_pos, child_orn)
+                    poses[child_name] = (child_pos, [0, 0, 0, 1])
+                    rotations[child_name] = child_rot
                     processed.add(child_name)
                     queue.append(child_name)
 
         return poses
+
+    @staticmethod
+    def _rotation_matrix(ax: float, ay: float, az: float, angle: float) -> list:
+        """Create a 3x3 rotation matrix (row-major) for rotation around axis by angle."""
+        c = math.cos(angle)
+        s = math.sin(angle)
+        t = 1 - c
+        # Normalize axis
+        mag = math.sqrt(ax*ax + ay*ay + az*az)
+        if mag < 1e-10:
+            return [1,0,0, 0,1,0, 0,0,1]
+        ax, ay, az = ax/mag, ay/mag, az/mag
+
+        return [
+            t*ax*ax + c,    t*ax*ay - s*az, t*ax*az + s*ay,
+            t*ax*ay + s*az, t*ay*ay + c,    t*ay*az - s*ax,
+            t*ax*az - s*ay, t*ay*az + s*ax, t*az*az + c,
+        ]
+
+    @staticmethod
+    def _mat_mul(a: list, b: list) -> list:
+        """Multiply two 3x3 matrices (row-major)."""
+        r = [0]*9
+        for i in range(3):
+            for j in range(3):
+                for k in range(3):
+                    r[i*3+j] += a[i*3+k] * b[k*3+j]
+        return r
+
+    @staticmethod
+    def _mat_vec(m: list, v: list) -> list:
+        """Multiply 3x3 matrix by 3-vector."""
+        return [
+            m[0]*v[0] + m[1]*v[1] + m[2]*v[2],
+            m[3]*v[0] + m[4]*v[1] + m[5]*v[2],
+            m[6]*v[0] + m[7]*v[1] + m[8]*v[2],
+        ]
 
 
 class _RobotState:
