@@ -526,6 +526,11 @@ def control(t, joints):
 
         async function addRobot(dof) {
             if (!worldId) { await createWorld(); }
+            // Clear previous robot visualization
+            if (robotGroup) { scene.remove(robotGroup); robotGroup = null; }
+            if (droneMesh) { droneMesh = null; }
+            if (mobileRobotMesh) { mobileRobotMesh = null; }
+
             const r = await fetch(`${API}/worlds/${worldId}/robots`, {
                 method: 'POST',
                 headers: {'Content-Type': 'application/json'},
@@ -971,6 +976,13 @@ def control(t, joints):
 
         async function addDrone(type) {
             if (!worldId) { await createWorld(); }
+            // Clear previous robot visualization
+            if (robotGroup) { scene.remove(robotGroup); robotGroup = null; }
+            if (droneMesh) { droneMesh = null; }
+            if (mobileRobotMesh) { mobileRobotMesh = null; }
+            robotGroup = new THREE.Group();
+            scene.add(robotGroup);
+
             const r = await fetch(`${API}/api/drones`, {
                 method: 'POST',
                 headers: {'Content-Type': 'application/json'},
@@ -1066,6 +1078,13 @@ def control(t, joints):
 
         async function addMobileRobot(type) {
             if (!worldId) { await createWorld(); }
+            // Clear previous robot visualization
+            if (robotGroup) { scene.remove(robotGroup); robotGroup = null; }
+            if (droneMesh) { droneMesh = null; }
+            if (mobileRobotMesh) { mobileRobotMesh = null; }
+            robotGroup = new THREE.Group();
+            scene.add(robotGroup);
+
             const r = await fetch(`${API}/api/mobile-robots`, {
                 method: 'POST',
                 headers: {'Content-Type': 'application/json'},
