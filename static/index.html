@@ -759,6 +759,23 @@
             const queue = [{ linkName: rootLink, worldPos: new THREE.Vector3(0, 0.04, 0) }];
             linkPositionMap[rootLink] = new THREE.Vector3(0, 0.04, 0);
 
+            // Pre-compute: find lowest point to determine base elevation
+            let lowestY = 0;
+            const tempQueue = [{ linkName: rootLink, pos: [0, 0, 0] }];
+            while (tempQueue.length > 0) {
+                const { linkName: ln, pos } = tempQueue.shift();
+                const ch = childrenOf[ln] || [];
+                for (const c of ch) {
+                    const cp = [pos[0] + c.origin.x, pos[1] + c.origin.z, pos[2] - c.origin.y];
+                    if (cp[1] < lowestY) lowestY = cp[1];
+                    tempQueue.push({ linkName: c.child, pos: cp });
+                }
+            }
+            // Offset base so lowest point is at ground (y=0)
+            const baseElevation = Math.max(0.04, -lowestY + 0.02);
+            queue[0].worldPos.y = baseElevation;
+            linkPositionMap[rootLink].y = baseElevation;
+
             // Base platform
             const baseGeo = new THREE.CylinderGeometry(0.06, 0.07, 0.04, 32);
             const baseMat = new THREE.MeshStandardMaterial({ color: 0x2a2a2a, metalness: 0.8, roughness: 0.2 });
