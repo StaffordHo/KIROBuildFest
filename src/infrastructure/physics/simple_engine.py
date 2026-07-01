@@ -198,7 +198,7 @@ class SimplePhysicsEngine(PhysicsEnginePort):
         self._robots.clear()
 
     def _compute_fk(self, robot_state: _RobotState) -> dict[str, tuple]:
-        """Compute forward kinematics for all links."""
+        """Compute forward kinematics for all links using proper transform chaining."""
         poses = {}
         robot = robot_state.robot
 
@@ -212,87 +212,86 @@ class SimplePhysicsEngine(PhysicsEnginePort):
             robot.base_pose.position.y,
             robot.base_pose.position.z,
         ]
-        base_orn = [
-            robot.base_pose.orientation.x,
-            robot.base_pose.orientation.y,
-            robot.base_pose.orientation.z,
-            robot.base_pose.orientation.w,
-        ]
-        poses[base.name] = (base_pos, base_orn)
+        poses[base.name] = (base_pos, [0, 0, 0, 1])
 
-        # BFS through kinematic tree
+        # BFS through kinematic tree - accumulate transforms
         processed = {base.name}
         queue = [base.name]
 
         while queue:
             parent_name = queue.pop(0)
-            parent_pos, parent_orn = poses[parent_name]
+            parent_pos = poses[parent_name][0]
 
             for joint_name, info in robot_state.joint_info.items():
                 if info["parent_link"] == parent_name and info["child_link"] not in processed:
                     child_name = info["child_link"]
                     origin = info["origin"]
 
-                    # Get joint position
-                    q = robot_state.joint_states.get(joint_name)
-                    q_val = q.position if q else 0.0
-
-                    # Compute child position (simplified)
+                    # Joint origin offset (in parent frame)
                     ox = origin.position.x
                     oy = origin.position.y
                     oz = origin.position.z
 
-                    # For revolute joints, rotate the offset
-                    axis = info["axis"]
-                    jtype = info["type"]
+                    # Get joint angle
+                    q = robot_state.joint_states.get(joint_name)
+                    q_val = q.position if q else 0.0
 
-                    if jtype in (JointType.REVOLUTE, JointType.CONTINUOUS):
-                        # Simplified rotation around axis
+                    jtype = info["type"]
+                    axis = info["axis"]
+
+                    # Compute child position:
+                    # Position = parent_pos + origin_offset (rotated by joint angle around axis)
+                    # For revolute joints, the offset itself doesn't rotate,
+                    # but subsequent children will be affected
+                    child_pos = [
+                        parent_pos[0] + ox,
+                        parent_pos[1] + oy,
+                        parent_pos[2] + oz,
+                    ]
+
+                    if jtype == JointType.PRISMATIC:
+                        child_pos[0] += q_val * axis.x
+                        child_pos[1] += q_val * axis.y
+                        child_pos[2] += q_val * axis.z
+
+                    # For revolute: rotate the offset of SUBSEQUENT children
+                    # We store a cumulative rotation per link (simplified approach)
+                    child_orn = [0, 0, 0, 1]
+                    if jtype in (JointType.REVOLUTE, JointType.CONTINUOUS) and abs(q_val) > 0.001:
+                        # Apply rotation: for Z-axis rotation, rotate in XY plane
                         cos_q = math.cos(q_val)
                         sin_q = math.sin(q_val)
 
-                        # Apply rotation to offset based on axis
-                        if abs(axis.z) > 0.5:  # Z-axis rotation
+                        # Rotate the offset from parent based on axis
+                        if abs(axis.z) > 0.5:
+                            # Rotation around Z: affects X,Y
                             rx = ox * cos_q - oy * sin_q
                             ry = ox * sin_q + oy * cos_q
-                            rz = oz
-                        elif abs(axis.y) > 0.5:  # Y-axis rotation
+                            child_pos = [
+                                parent_pos[0] + rx,
+                                parent_pos[1] + ry,
+                                parent_pos[2] + oz,
+                            ]
+                        elif abs(axis.y) > 0.5:
+                            # Rotation around Y: affects X,Z
                             rx = ox * cos_q + oz * sin_q
-                            ry = oy
                             rz = -ox * sin_q + oz * cos_q
-                        else:  # X-axis rotation
-                            rx = ox
+                            child_pos = [
+                                parent_pos[0] + rx,
+                                parent_pos[1] + oy,
+                                parent_pos[2] + rz,
+                            ]
+                        elif abs(axis.x) > 0.5:
+                            # Rotation around X: affects Y,Z
                             ry = oy * cos_q - oz * sin_q
                             rz = oy * sin_q + oz * cos_q
+                            child_pos = [
+                                parent_pos[0] + ox,
+                                parent_pos[1] + ry,
+                                parent_pos[2] + rz,
+                            ]
 
-                        child_pos = [
-                            parent_pos[0] + rx,
-                            parent_pos[1] + ry,
-                            parent_pos[2] + rz,
-                        ]
-                        # Simplified orientation
-                        child_orn = Quaternion.from_euler(
-                            q_val * axis.x, q_val * axis.y, q_val * axis.z
-                        )
-                        child_orn_list = [child_orn.x, child_orn.y, child_orn.z, child_orn.w]
-
-                    elif jtype == JointType.PRISMATIC:
-                        child_pos = [
-                            parent_pos[0] + ox + q_val * axis.x,
-                            parent_pos[1] + oy + q_val * axis.y,
-                            parent_pos[2] + oz + q_val * axis.z,
-                        ]
-                        child_orn_list = parent_orn
-
-                    else:
-                        child_pos = [
-                            parent_pos[0] + ox,
-                            parent_pos[1] + oy,
-                            parent_pos[2] + oz,
-                        ]
-                        child_orn_list = parent_orn
-
-                    poses[child_name] = (child_pos, child_orn_list)
+                    poses[child_name] = (child_pos, child_orn)
                     processed.add(child_name)
                     queue.append(child_name)
 

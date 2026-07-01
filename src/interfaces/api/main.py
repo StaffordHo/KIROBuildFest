@@ -311,6 +311,83 @@ async def set_joint_commands(world_id: str, request: JointCommandRequest):
     return {"applied": request.positions}
 
 
+@app.get("/worlds/{world_id}/robots/{robot_id}/geometry")
+async def get_robot_geometry(world_id: str, robot_id: str):
+    """Get robot geometry data for 3D visualization.
+
+    Returns link dimensions, joint origins, and structure needed
+    to render the robot without mesh files.
+    """
+    world = _worlds.get(world_id)
+    if not world:
+        raise HTTPException(404, "World not found")
+
+    robot = None
+    for r in world.robots.values():
+        if str(r.id) == robot_id or r.metadata.name == robot_id:
+            robot = r
+            break
+
+    if not robot:
+        raise HTTPException(404, f"Robot '{robot_id}' not found")
+
+    from ...domain.models.geometry import Box, Cylinder, Sphere
+
+    links_data = {}
+    for link_name, link in robot.links.items():
+        link_info = {"name": link_name, "visuals": [], "collisions": []}
+
+        for vis in link.visuals:
+            geom_data = _serialize_geometry(vis.geometry)
+            if geom_data:
+                geom_data["color"] = list(vis.color) if vis.color else [0.5, 0.5, 0.5, 1.0]
+                link_info["visuals"].append(geom_data)
+
+        for col in link.collisions:
+            geom_data = _serialize_geometry(col.geometry)
+            if geom_data:
+                link_info["collisions"].append(geom_data)
+
+        links_data[link_name] = link_info
+
+    joints_data = {}
+    for joint_name, joint in robot.joints.items():
+        joints_data[joint_name] = {
+            "parent": joint.parent_link,
+            "child": joint.child_link,
+            "type": joint.joint_type.value,
+            "origin": {
+                "x": joint.origin.position.x,
+                "y": joint.origin.position.y,
+                "z": joint.origin.position.z,
+            },
+            "axis": {"x": joint.axis.x, "y": joint.axis.y, "z": joint.axis.z},
+        }
+
+    return {
+        "robot_id": str(robot.id),
+        "name": robot.metadata.name,
+        "links": links_data,
+        "joints": joints_data,
+    }
+
+
+def _serialize_geometry(geom) -> dict:
+    """Convert geometry to JSON-serializable dict."""
+    from ...domain.models.geometry import Box, Cylinder, Sphere, Mesh
+    if geom is None:
+        return None
+    if isinstance(geom, Box):
+        return {"type": "box", "size_x": geom.size_x, "size_y": geom.size_y, "size_z": geom.size_z}
+    elif isinstance(geom, Cylinder):
+        return {"type": "cylinder", "radius": geom.radius, "length": geom.length}
+    elif isinstance(geom, Sphere):
+        return {"type": "sphere", "radius": geom.radius}
+    elif isinstance(geom, Mesh):
+        return {"type": "mesh", "filename": geom.filename}
+    return None
+
+
 # --- WebSocket for real-time state streaming ---
 
 @app.websocket("/ws/{world_id}")
