@@ -92,6 +92,15 @@
         <p class="subtitle">Open Robotics Simulation Platform</p>
 
         <div class="section">
+            <div class="section-title">Environment</div>
+            <div class="btn-group">
+                <button onclick="loadEnvironment('tabletop')">🪑 Tabletop</button>
+                <button onclick="loadEnvironment('warehouse')">🏭 Warehouse</button>
+                <button onclick="loadEnvironment('outdoor')">🌳 Outdoor</button>
+            </div>
+        </div>
+
+        <div class="section">
             <div class="section-title">Simulation</div>
             <div class="btn-group">
                 <button id="btn-create" onclick="createWorld()">New World</button>
@@ -216,6 +225,9 @@ def control(t, joints):
     <div id="info">
         <h3>Telemetry</h3>
         <pre id="telemetry">Waiting for simulation...</pre>
+        <div id="sensor-view" style="margin-top:8px;">
+            <canvas id="lidar-canvas" width="200" height="200" style="width:100%;border:1px solid #30363d;border-radius:6px;background:#0a0a0a;display:none;"></canvas>
+        </div>
     </div>
 
     <!-- Status Bar -->
@@ -1299,6 +1311,302 @@ for (let i = 0; i < joints.length; i++) {
             };
             document.getElementById('code-editor').value = presets[name] || '';
         }
+
+        // ===================== ENVIRONMENTS =====================
+        let environmentGroup = null;
+
+        function loadEnvironment(type) {
+            // Clear previous environment objects
+            if (environmentGroup) scene.remove(environmentGroup);
+            environmentGroup = new THREE.Group();
+
+            if (type === 'tabletop') {
+                // Table
+                const tableTop = new THREE.Mesh(
+                    new THREE.BoxGeometry(0.8, 0.03, 0.6),
+                    new THREE.MeshStandardMaterial({ color: 0x8B5E3C, roughness: 0.7 })
+                );
+                tableTop.position.set(0.3, 0.35, 0);
+                tableTop.castShadow = true;
+                tableTop.receiveShadow = true;
+                environmentGroup.add(tableTop);
+
+                // Table legs
+                const legGeo = new THREE.CylinderGeometry(0.02, 0.02, 0.35, 8);
+                const legMat = new THREE.MeshStandardMaterial({ color: 0x5C3A1E, roughness: 0.8 });
+                const legOffsets = [[0.35, 0, 0.25], [0.35, 0, -0.25], [-0.05, 0, 0.25], [-0.05, 0, -0.25]];
+                for (const [lx, ly, lz] of legOffsets) {
+                    const leg = new THREE.Mesh(legGeo, legMat);
+                    leg.position.set(0.3 + lx - 0.15, 0.175, lz);
+                    leg.castShadow = true;
+                    environmentGroup.add(leg);
+                }
+
+                // Objects on table
+                const boxGeo = new THREE.BoxGeometry(0.05, 0.05, 0.05);
+                const objects = [
+                    { pos: [0.2, 0.39, 0.1], color: 0xe63946 },
+                    { pos: [0.35, 0.39, -0.05], color: 0x457b9d },
+                    { pos: [0.45, 0.39, 0.15], color: 0x2a9d8f },
+                ];
+                for (const obj of objects) {
+                    const mesh = new THREE.Mesh(boxGeo, new THREE.MeshStandardMaterial({ color: obj.color, roughness: 0.4 }));
+                    mesh.position.set(...obj.pos);
+                    mesh.castShadow = true;
+                    environmentGroup.add(mesh);
+                }
+
+                // Cylinder object
+                const cylObj = new THREE.Mesh(
+                    new THREE.CylinderGeometry(0.02, 0.02, 0.08, 16),
+                    new THREE.MeshStandardMaterial({ color: 0xf4a261, roughness: 0.3, metalness: 0.5 })
+                );
+                cylObj.position.set(0.15, 0.41, -0.1);
+                cylObj.castShadow = true;
+                environmentGroup.add(cylObj);
+
+            } else if (type === 'warehouse') {
+                // Floor markings
+                const lineGeo = new THREE.BoxGeometry(2, 0.002, 0.02);
+                const lineMat = new THREE.MeshStandardMaterial({ color: 0xf4a261, emissive: 0xf4a261, emissiveIntensity: 0.2 });
+                for (let z = -0.5; z <= 0.5; z += 0.5) {
+                    const line = new THREE.Mesh(lineGeo, lineMat);
+                    line.position.set(0, 0.001, z);
+                    environmentGroup.add(line);
+                }
+
+                // Shelves
+                const shelfMat = new THREE.MeshStandardMaterial({ color: 0x4a4a4a, metalness: 0.8, roughness: 0.3 });
+                for (let x = -0.6; x <= 0.6; x += 0.6) {
+                    const shelf = new THREE.Mesh(new THREE.BoxGeometry(0.1, 0.5, 0.4), shelfMat);
+                    shelf.position.set(x, 0.25, 0.7);
+                    shelf.castShadow = true;
+                    environmentGroup.add(shelf);
+
+                    // Shelf levels
+                    for (let y = 0.15; y <= 0.45; y += 0.15) {
+                        const level = new THREE.Mesh(
+                            new THREE.BoxGeometry(0.09, 0.01, 0.38),
+                            new THREE.MeshStandardMaterial({ color: 0x666666 })
+                        );
+                        level.position.set(x, y, 0.7);
+                        environmentGroup.add(level);
+                    }
+
+                    // Boxes on shelves
+                    const boxColors = [0xe63946, 0x457b9d, 0x2a9d8f, 0xf4a261];
+                    for (let y = 0.18; y <= 0.48; y += 0.15) {
+                        const box = new THREE.Mesh(
+                            new THREE.BoxGeometry(0.06, 0.06, 0.06),
+                            new THREE.MeshStandardMaterial({ color: boxColors[Math.floor(Math.random() * 4)], roughness: 0.5 })
+                        );
+                        box.position.set(x, y, 0.7);
+                        box.castShadow = true;
+                        environmentGroup.add(box);
+                    }
+                }
+
+                // Pallets
+                const palletGeo = new THREE.BoxGeometry(0.3, 0.02, 0.3);
+                const palletMat = new THREE.MeshStandardMaterial({ color: 0x8B5E3C, roughness: 0.9 });
+                const pallet1 = new THREE.Mesh(palletGeo, palletMat);
+                pallet1.position.set(-0.5, 0.01, -0.5);
+                environmentGroup.add(pallet1);
+
+                // Stacked boxes on pallet
+                for (let i = 0; i < 3; i++) {
+                    const crate = new THREE.Mesh(
+                        new THREE.BoxGeometry(0.12, 0.1, 0.12),
+                        new THREE.MeshStandardMaterial({ color: 0x6b4c3b, roughness: 0.8 })
+                    );
+                    crate.position.set(-0.5, 0.07 + i * 0.1, -0.5);
+                    crate.castShadow = true;
+                    environmentGroup.add(crate);
+                }
+
+                // Safety cone
+                const coneGeo = new THREE.ConeGeometry(0.03, 0.1, 8);
+                const coneMat = new THREE.MeshStandardMaterial({ color: 0xff6600, emissive: 0xff6600, emissiveIntensity: 0.1 });
+                const cone = new THREE.Mesh(coneGeo, coneMat);
+                cone.position.set(0.4, 0.05, -0.3);
+                environmentGroup.add(cone);
+
+            } else if (type === 'outdoor') {
+                // Grass-colored ground override
+                const grass = new THREE.Mesh(
+                    new THREE.PlaneGeometry(4, 4),
+                    new THREE.MeshStandardMaterial({ color: 0x2d5a27, roughness: 0.95 })
+                );
+                grass.rotation.x = -Math.PI / 2;
+                grass.position.y = 0.001;
+                environmentGroup.add(grass);
+
+                // Path
+                const path = new THREE.Mesh(
+                    new THREE.BoxGeometry(0.3, 0.005, 2),
+                    new THREE.MeshStandardMaterial({ color: 0x8a8275, roughness: 0.9 })
+                );
+                path.position.set(0, 0.003, 0);
+                environmentGroup.add(path);
+
+                // Trees (simple cone + cylinder)
+                const treePositions = [[0.7, 0, 0.5], [-0.6, 0, 0.8], [0.8, 0, -0.4], [-0.7, 0, -0.6]];
+                for (const [tx, ty, tz] of treePositions) {
+                    const trunk = new THREE.Mesh(
+                        new THREE.CylinderGeometry(0.02, 0.03, 0.2, 8),
+                        new THREE.MeshStandardMaterial({ color: 0x5C3A1E })
+                    );
+                    trunk.position.set(tx, 0.1, tz);
+                    trunk.castShadow = true;
+                    environmentGroup.add(trunk);
+
+                    const canopy = new THREE.Mesh(
+                        new THREE.ConeGeometry(0.12, 0.25, 8),
+                        new THREE.MeshStandardMaterial({ color: 0x1a7a1a, roughness: 0.8 })
+                    );
+                    canopy.position.set(tx, 0.3, tz);
+                    canopy.castShadow = true;
+                    environmentGroup.add(canopy);
+                }
+
+                // Rock obstacles
+                const rockGeo = new THREE.DodecahedronGeometry(0.06, 1);
+                const rockMat = new THREE.MeshStandardMaterial({ color: 0x666655, roughness: 0.9 });
+                const rockPositions = [[0.3, 0.03, -0.3], [-0.2, 0.04, 0.4], [0.5, 0.03, 0.3]];
+                for (const [rx, ry, rz] of rockPositions) {
+                    const rock = new THREE.Mesh(rockGeo, rockMat);
+                    rock.position.set(rx, ry, rz);
+                    rock.castShadow = true;
+                    environmentGroup.add(rock);
+                }
+            }
+
+            scene.add(environmentGroup);
+            setStatus('idle', `Environment: ${type}`);
+        }
+
+        // ===================== SENSOR VISUALIZATION =====================
+        let lidarPoints = null;
+        let cameraViewEnabled = false;
+
+        function simulateLiDAR() {
+            // Cast rays from robot base in a circle, show hit points
+            if (!robotGroup) return;
+
+            if (lidarPoints) scene.remove(lidarPoints);
+
+            const numRays = 36; // 360 degrees / 10 degree resolution
+            const maxRange = 1.0;
+            const positions = [];
+            const colors = [];
+            const hitDistances = [];
+
+            // Robot position (approximate from first joint sphere)
+            const robotPos = jointSpheres.length > 0 ? jointSpheres[0].position.clone() : new THREE.Vector3(0, 0.1, 0);
+            robotPos.y = 0.1; // LiDAR height
+
+            for (let i = 0; i < numRays; i++) {
+                const angle = (i / numRays) * Math.PI * 2;
+                const dir = new THREE.Vector3(Math.cos(angle), 0, Math.sin(angle));
+
+                // Simple raycast against environment objects
+                let hitDist = maxRange;
+                if (environmentGroup) {
+                    const raycaster = new THREE.Raycaster(robotPos, dir, 0, maxRange);
+                    const intersects = raycaster.intersectObjects(environmentGroup.children, true);
+                    if (intersects.length > 0) {
+                        hitDist = intersects[0].distance;
+                    }
+                }
+
+                hitDistances.push(hitDist);
+
+                // Point at hit location
+                const hitPoint = robotPos.clone().add(dir.clone().multiplyScalar(hitDist));
+                positions.push(hitPoint.x, hitPoint.y, hitPoint.z);
+
+                // Color: green for close, red for far
+                const t = hitDist / maxRange;
+                colors.push(1 - t, t, 0.2);
+            }
+
+            const geometry = new THREE.BufferGeometry();
+            geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+            geometry.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
+
+            const material = new THREE.PointsMaterial({ size: 0.015, vertexColors: true });
+            lidarPoints = new THREE.Points(geometry, material);
+            scene.add(lidarPoints);
+
+            // Draw 2D LiDAR view on canvas
+            drawLidarView(hitDistances, numRays, maxRange);
+        }
+
+        function drawLidarView(distances, numRays, maxRange) {
+            const canvas = document.getElementById('lidar-canvas');
+            canvas.style.display = 'block';
+            const ctx = canvas.getContext('2d');
+            const w = canvas.width;
+            const h = canvas.height;
+            const cx = w / 2;
+            const cy = h / 2;
+            const scale = (w / 2 - 10) / maxRange;
+
+            ctx.fillStyle = '#0a0a0a';
+            ctx.fillRect(0, 0, w, h);
+
+            // Range circles
+            ctx.strokeStyle = '#1a2a1a';
+            ctx.lineWidth = 0.5;
+            for (let r = 0.25; r <= maxRange; r += 0.25) {
+                ctx.beginPath();
+                ctx.arc(cx, cy, r * scale, 0, Math.PI * 2);
+                ctx.stroke();
+            }
+
+            // Draw rays and points
+            ctx.strokeStyle = '#1a3a1a';
+            ctx.lineWidth = 0.5;
+
+            for (let i = 0; i < numRays; i++) {
+                const angle = (i / numRays) * Math.PI * 2 - Math.PI / 2;
+                const dist = distances[i];
+                const px = cx + Math.cos(angle) * dist * scale;
+                const py = cy + Math.sin(angle) * dist * scale;
+
+                // Ray line
+                ctx.beginPath();
+                ctx.moveTo(cx, cy);
+                ctx.lineTo(px, py);
+                ctx.stroke();
+
+                // Hit point
+                const t = dist / maxRange;
+                ctx.fillStyle = dist < maxRange ? `rgb(${Math.floor(255*(1-t))}, ${Math.floor(255*t)}, 50)` : '#333';
+                ctx.beginPath();
+                ctx.arc(px, py, 3, 0, Math.PI * 2);
+                ctx.fill();
+            }
+
+            // Robot indicator
+            ctx.fillStyle = '#58a6ff';
+            ctx.beginPath();
+            ctx.arc(cx, cy, 4, 0, Math.PI * 2);
+            ctx.fill();
+
+            // Label
+            ctx.fillStyle = '#8b949e';
+            ctx.font = '9px monospace';
+            ctx.fillText('LiDAR 360° (2D)', 5, 12);
+            ctx.fillText(`${numRays} rays | ${maxRange}m range`, 5, h - 5);
+        }
+
+        // Run LiDAR every second
+        setInterval(() => {
+            if (environmentGroup && robotGroup) {
+                simulateLiDAR();
+            }
+        }, 500);
 
         // ===================== INIT =====================
         initScene();
