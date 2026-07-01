@@ -89,6 +89,10 @@ async def root():
 from .robot_types import router as robot_types_router, step_all as step_all_robots
 app.include_router(robot_types_router, prefix="/api", tags=["Robot Types"])
 
+# Register model library router
+from .model_library import router as model_library_router
+app.include_router(model_library_router, prefix="/api", tags=["Model Library"])
+
 
 # --- REST Endpoints ---
 

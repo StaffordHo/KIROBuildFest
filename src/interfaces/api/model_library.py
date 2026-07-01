@@ -1,0 +1,334 @@
+"""Model Library — curated catalog of open-source robot URDF models.
+
+Enables one-click loading of popular robots from public repositories.
+Users can also submit their own models or fetch from any GitHub URL.
+
+Enterprise ontology:
+- ModelCatalog → ModelEntry → ModelVersion
+- Supports tagging, categorization, and validation status
+"""
+
+from __future__ import annotations
+from fastapi import APIRouter, HTTPException
+from pydantic import BaseModel, Field
+from typing import Optional
+from enum import Enum
+import httpx
+import uuid
+
+router = APIRouter(prefix="/models", tags=["Model Library"])
+
+
+# ============================================================================
+# ONTOLOGY
+# ============================================================================
+
+class RobotCategory(str, Enum):
+    """Enterprise classification of robot systems."""
+    MANIPULATOR = "manipulator"          # Industrial/research arms
+    MOBILE_GROUND = "mobile_ground"      # Wheeled/tracked ground robots
+    AERIAL = "aerial"                    # Drones, VTOL
+    LEGGED = "legged"                    # Bipedal, quadruped
+    HUMANOID = "humanoid"               # Full humanoid
+    COLLABORATIVE = "collaborative"      # Cobots (human-safe)
+    UNDERWATER = "underwater"            # ROV, AUV
+    SPACE = "space"                      # Space manipulators
+    CUSTOM = "custom"                    # User-defined
+
+
+class ValidationStatus(str, Enum):
+    """Model validation state for enterprise use."""
+    UNVERIFIED = "unverified"            # Just uploaded, not tested
+    KINEMATICS_OK = "kinematics_ok"      # FK/IK verified
+    DYNAMICS_OK = "dynamics_ok"          # Mass/inertia verified
+    PRODUCTION_READY = "production_ready"  # Full validation passed
+
+
+class ModelEntry(BaseModel):
+    """A robot model in the catalog."""
+    id: str
+    name: str
+    description: str
+    category: RobotCategory
+    manufacturer: str = ""
+    dof: int = 0
+    source_url: str                      # Raw URDF download URL
+    thumbnail_url: str = ""
+    tags: list[str] = []
+    validation_status: ValidationStatus = ValidationStatus.UNVERIFIED
+    payload_kg: float = 0.0             # Max payload (for arms)
+    reach_m: float = 0.0                # Max reach (for arms)
+    weight_kg: float = 0.0             # Robot weight
+    license: str = "open-source"
+
+
+# ============================================================================
+# CURATED CATALOG — Popular open-source robots
+# ============================================================================
+
+MODEL_CATALOG: list[ModelEntry] = [
+    # --- MANIPULATORS ---
+    ModelEntry(
+        id="panda_franka",
+        name="Franka Emika Panda",
+        description="7-DOF collaborative research arm. Industry standard for manipulation research.",
+        category=RobotCategory.MANIPULATOR,
+        manufacturer="Franka Emika",
+        dof=7,
+        source_url="https://raw.githubusercontent.com/Daniella1/urdf_files_dataset/main/urdf_files/random/panda/panda.urdf",
+        tags=["cobot", "research", "7dof", "torque-controlled"],
+        payload_kg=3.0,
+        reach_m=0.855,
+        weight_kg=18.0,
+        license="Apache-2.0",
+    ),
+    ModelEntry(
+        id="kuka_iiwa",
+        name="KUKA iiwa 14",
+        description="7-DOF lightweight industrial robot with torque sensors in every joint.",
+        category=RobotCategory.COLLABORATIVE,
+        manufacturer="KUKA",
+        dof=7,
+        source_url="https://raw.githubusercontent.com/Daniella1/urdf_files_dataset/main/urdf_files/random/kuka_iiwa/model.urdf",
+        tags=["industrial", "collaborative", "7dof", "sensitive"],
+        payload_kg=14.0,
+        reach_m=0.820,
+        weight_kg=29.9,
+        license="BSD",
+    ),
+    ModelEntry(
+        id="ur5",
+        name="Universal Robots UR5",
+        description="6-DOF industrial cobot. Most deployed collaborative robot worldwide.",
+        category=RobotCategory.COLLABORATIVE,
+        manufacturer="Universal Robots",
+        dof=6,
+        source_url="https://raw.githubusercontent.com/Daniella1/urdf_files_dataset/main/urdf_files/oems/universal_robots/ur_description/urdf/ur5_robot.urdf",
+        tags=["industrial", "cobot", "6dof", "popular"],
+        payload_kg=5.0,
+        reach_m=0.850,
+        weight_kg=18.4,
+        license="BSD",
+    ),
+    ModelEntry(
+        id="kinova_gen3",
+        name="Kinova Gen3",
+        description="7-DOF ultra-lightweight arm designed for research and assistive applications.",
+        category=RobotCategory.MANIPULATOR,
+        manufacturer="Kinova",
+        dof=7,
+        source_url="https://raw.githubusercontent.com/Daniella1/urdf_files_dataset/main/urdf_files/oems/kinova_robotics/kortex_description/robots/gen3_robotiq_2f_85.xacro.urdf",
+        tags=["lightweight", "assistive", "research", "7dof"],
+        payload_kg=4.0,
+        reach_m=0.902,
+        weight_kg=8.2,
+        license="BSD",
+    ),
+
+    # --- MOBILE GROUND ---
+    ModelEntry(
+        id="turtlebot3",
+        name="TurtleBot3 Burger",
+        description="Compact differential drive robot. ROS2 reference platform for education.",
+        category=RobotCategory.MOBILE_GROUND,
+        manufacturer="ROBOTIS",
+        dof=2,
+        source_url="https://raw.githubusercontent.com/Daniella1/urdf_files_dataset/main/urdf_files/oems/xacro_generated/turtlebot3_robotis/turtlebot3_description/urdf/turtlebot3_burger.urdf",
+        tags=["education", "ros2", "differential", "compact"],
+        weight_kg=1.0,
+        license="Apache-2.0",
+    ),
+    ModelEntry(
+        id="jackal",
+        name="Clearpath Jackal",
+        description="Rugged outdoor UGV with skid-steer drive. Common in field robotics research.",
+        category=RobotCategory.MOBILE_GROUND,
+        manufacturer="Clearpath Robotics",
+        dof=4,
+        source_url="https://raw.githubusercontent.com/Daniella1/urdf_files_dataset/main/urdf_files/oems/xacro_generated/jackal_clearpath_robotics/jackal_description/urdf/jackal.urdf",
+        tags=["outdoor", "rugged", "field-robotics", "skid-steer"],
+        payload_kg=20.0,
+        weight_kg=17.0,
+        license="BSD",
+    ),
+
+    # --- LEGGED ---
+    ModelEntry(
+        id="anymal_c",
+        name="ANYmal C",
+        description="Quadruped robot for inspection and exploration in challenging terrain.",
+        category=RobotCategory.LEGGED,
+        manufacturer="ANYbotics",
+        dof=12,
+        source_url="https://raw.githubusercontent.com/Daniella1/urdf_files_dataset/main/urdf_files/oems/xacro_generated/anymal_anybotics/anymal_c/urdf/anymal.urdf",
+        tags=["quadruped", "inspection", "autonomous", "rough-terrain"],
+        payload_kg=10.0,
+        weight_kg=50.0,
+        license="BSD",
+    ),
+
+    # --- HUMANOID ---
+    ModelEntry(
+        id="atlas",
+        name="Boston Dynamics Atlas (simplified)",
+        description="Humanoid reference model for bipedal locomotion research.",
+        category=RobotCategory.HUMANOID,
+        manufacturer="Boston Dynamics",
+        dof=30,
+        source_url="https://raw.githubusercontent.com/Daniella1/urdf_files_dataset/main/urdf_files/oems/xacro_generated/atlas_boston_dynamics/atlas_description/urdf/atlas_v5_simple_shapes.urdf",
+        tags=["humanoid", "bipedal", "locomotion", "research"],
+        weight_kg=80.0,
+        license="BSD",
+    ),
+
+    # --- AERIAL ---
+    ModelEntry(
+        id="crazyflie",
+        name="Crazyflie 2.1",
+        description="Nano quadcopter for swarm research. Ultra-lightweight at 27g.",
+        category=RobotCategory.AERIAL,
+        manufacturer="Bitcraze",
+        dof=4,
+        source_url="https://raw.githubusercontent.com/Daniella1/urdf_files_dataset/main/urdf_files/random/crazyflie/cf2_assembly.urdf",
+        tags=["nano", "swarm", "research", "quadcopter"],
+        weight_kg=0.027,
+        license="MIT",
+    ),
+]
+
+
+# ============================================================================
+# API ENDPOINTS
+# ============================================================================
+
+class FetchModelRequest(BaseModel):
+    """Request to fetch a model from the catalog or a URL."""
+    model_id: Optional[str] = None       # From catalog
+    url: Optional[str] = None            # Direct URL to URDF
+    world_id: str                         # Target world to load into
+
+
+class ModelSearchRequest(BaseModel):
+    category: Optional[RobotCategory] = None
+    search: Optional[str] = None
+    tags: Optional[list[str]] = None
+
+
+@router.get("/catalog")
+async def get_catalog():
+    """Get the full model catalog."""
+    return {
+        "models": [m.dict() for m in MODEL_CATALOG],
+        "total": len(MODEL_CATALOG),
+        "categories": [c.value for c in RobotCategory],
+    }
+
+
+@router.get("/catalog/{model_id}")
+async def get_model_details(model_id: str):
+    """Get details for a specific model."""
+    model = next((m for m in MODEL_CATALOG if m.id == model_id), None)
+    if not model:
+        raise HTTPException(404, f"Model '{model_id}' not found in catalog")
+    return model.dict()
+
+
+@router.post("/catalog/search")
+async def search_models(request: ModelSearchRequest):
+    """Search/filter the model catalog."""
+    results = MODEL_CATALOG
+
+    if request.category:
+        results = [m for m in results if m.category == request.category]
+
+    if request.search:
+        q = request.search.lower()
+        results = [m for m in results if (
+            q in m.name.lower() or
+            q in m.description.lower() or
+            q in m.manufacturer.lower() or
+            any(q in tag for tag in m.tags)
+        )]
+
+    if request.tags:
+        results = [m for m in results if any(t in m.tags for t in request.tags)]
+
+    return {"models": [m.dict() for m in results], "total": len(results)}
+
+
+@router.post("/fetch")
+async def fetch_and_load_model(request: FetchModelRequest):
+    """Fetch a URDF from catalog or URL and load it into a world.
+
+    This is the core "one-click deploy" endpoint.
+    """
+    urdf_url = None
+
+    if request.model_id:
+        model = next((m for m in MODEL_CATALOG if m.id == request.model_id), None)
+        if not model:
+            raise HTTPException(404, f"Model '{request.model_id}' not found")
+        urdf_url = model.source_url
+    elif request.url:
+        urdf_url = request.url
+    else:
+        raise HTTPException(400, "Provide either model_id or url")
+
+    # Fetch URDF content from remote URL
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.get(urdf_url)
+            response.raise_for_status()
+            urdf_content = response.text
+    except httpx.HTTPError as e:
+        raise HTTPException(502, f"Failed to fetch URDF: {str(e)}")
+
+    # Validate it's actually XML/URDF
+    if "<robot" not in urdf_content and "<link" not in urdf_content:
+        raise HTTPException(422, "Fetched content doesn't appear to be a valid URDF file")
+
+    # Parse into domain model
+    from ...infrastructure.physics.urdf_loader import URDFLoader
+    loader = URDFLoader()
+
+    try:
+        robot = loader.load_from_string(urdf_content)
+    except Exception as e:
+        raise HTTPException(422, f"Failed to parse URDF: {str(e)}")
+
+    # Load into the specified world
+    from .main import _worlds, _physics_engines
+    world = _worlds.get(request.world_id)
+    if not world:
+        raise HTTPException(404, f"World '{request.world_id}' not found")
+
+    world.add_robot(robot)
+    engine = _physics_engines.get(request.world_id)
+    if engine:
+        engine.load_robot(robot)
+
+    return {
+        "success": True,
+        "robot_id": str(robot.id),
+        "name": robot.metadata.name,
+        "dof": robot.dof,
+        "links": len(robot.links),
+        "joints": list(robot.joints.keys()),
+        "source": urdf_url,
+    }
+
+
+@router.get("/categories")
+async def list_categories():
+    """List all robot categories with counts."""
+    counts = {}
+    for model in MODEL_CATALOG:
+        cat = model.category.value
+        counts[cat] = counts.get(cat, 0) + 1
+
+    return {
+        "categories": [
+            {"name": c.value, "count": counts.get(c.value, 0), "label": c.value.replace("_", " ").title()}
+            for c in RobotCategory
+        ]
+    }
