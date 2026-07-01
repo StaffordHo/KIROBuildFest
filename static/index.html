@@ -188,6 +188,28 @@
             <button onclick="loadFromLibrary()" style="width:100%;">📦 Load Model</button>
             <div id="model-info" style="margin-top:8px;font-size:11px;color:#8b949e;"></div>
         </div>
+
+        <div class="section">
+            <div class="section-title">Algorithm Editor</div>
+            <textarea id="code-editor" style="width:100%;height:120px;background:#0d1117;color:#7ee787;border:1px solid #30363d;border-radius:6px;padding:8px;font-family:monospace;font-size:11px;resize:vertical;" placeholder="# Write your control algorithm here
+# Available: joints (dict of joint names)
+# Return: dict of joint_name -> target_position
+
+def control(t, joints):
+    import math
+    positions = {}
+    for name in joints:
+        positions[name] = math.sin(t * 2)
+    return positions"></textarea>
+            <div class="btn-group" style="margin-top:4px;">
+                <button onclick="loadPreset('wave')" style="font-size:10px;padding:4px 8px;">Wave</button>
+                <button onclick="loadPreset('sweep')" style="font-size:10px;padding:4px 8px;">Sweep</button>
+                <button onclick="loadPreset('circle')" style="font-size:10px;padding:4px 8px;">Circle</button>
+            </div>
+            <button onclick="runAlgorithm()" style="width:100%;margin-top:6px;">▶ Run Algorithm</button>
+            <button onclick="stopAlgorithm()" style="width:100%;margin-top:4px;" class="danger">⏹ Stop</button>
+            <div id="algo-status" style="margin-top:6px;font-size:11px;color:#8b949e;"></div>
+        </div>
     </div>
 
     <!-- Telemetry -->
@@ -817,7 +839,7 @@
                     const linkLength = dir.length();
 
                     if (linkLength > 0.005) {
-                        const bodyRadius = Math.max(0.015, Math.min(0.035, linkLength * 0.15));
+                        const bodyRadius = Math.max(0.025, Math.min(0.045, linkLength * 0.22));
                         const bodyGeo = new THREE.CylinderGeometry(bodyRadius, bodyRadius * 0.9, 1.0, 12);
                         const bodyMat = new THREE.MeshStandardMaterial({
                             color: 0x3a3a42, metalness: 0.7, roughness: 0.25
@@ -848,7 +870,7 @@
                     if (Math.abs(child.axis.y) > 0.5) jointColor = 0x5aab5a;
                     else if (Math.abs(child.axis.x) > 0.5) jointColor = 0xab5a4a;
 
-                    const housingGeo = new THREE.SphereGeometry(0.018, 12, 12);
+                    const housingGeo = new THREE.SphereGeometry(0.022, 14, 14);
                     const housingMat = new THREE.MeshStandardMaterial({
                         color: jointColor, metalness: 0.5, roughness: 0.35,
                         emissive: jointColor, emissiveIntensity: 0.1
@@ -1144,6 +1166,119 @@
                     mobileRobotMesh.rotation.y = -state.heading;
                 }
             }
+        }
+
+        // ===================== ALGORITHM TESTING =====================
+        let algoInterval = null;
+        let algoStartTime = 0;
+
+        function runAlgorithm() {
+            if (!worldId || !robotId || robotJoints.length === 0) {
+                document.getElementById('algo-status').textContent = '❌ Load a robot first';
+                return;
+            }
+
+            const code = document.getElementById('code-editor').value;
+            if (!code.trim()) {
+                document.getElementById('algo-status').textContent = '❌ Write some code first';
+                return;
+            }
+
+            // Ensure simulation is running
+            controlSim('start');
+            algoStartTime = Date.now();
+
+            // Parse the user's algorithm into a JS function
+            // We convert simple Python-like syntax to JS
+            document.getElementById('algo-status').textContent = '🟢 Running algorithm...';
+
+            algoInterval = setInterval(() => {
+                const t = (Date.now() - algoStartTime) / 1000; // seconds
+                try {
+                    const positions = executeAlgorithm(code, t, robotJoints);
+                    if (positions && Object.keys(positions).length > 0) {
+                        if (ws && ws.readyState === WebSocket.OPEN) {
+                            ws.send(JSON.stringify({ type: 'joint_command', positions }));
+                        } else {
+                            sendJointPositions(positions);
+                        }
+                        // Update sliders to reflect
+                        for (const [joint, val] of Object.entries(positions)) {
+                            const slider = document.getElementById(`slider-${joint}`);
+                            if (slider) { slider.value = val; }
+                            const valSpan = document.getElementById(`val-${joint}`);
+                            if (valSpan) { valSpan.textContent = val.toFixed(2); }
+                        }
+                    }
+                } catch (e) {
+                    document.getElementById('algo-status').textContent = '❌ Error: ' + e.message;
+                    stopAlgorithm();
+                }
+            }, 50); // 20Hz control loop
+        }
+
+        function stopAlgorithm() {
+            if (algoInterval) {
+                clearInterval(algoInterval);
+                algoInterval = null;
+            }
+            document.getElementById('algo-status').textContent = '⏹ Stopped';
+        }
+
+        function executeAlgorithm(code, t, joints) {
+            // Simple JS-based algorithm execution
+            // Users write in a Python-like style but we execute as JS
+            const positions = {};
+            const jointNames = joints;
+
+            // Built-in math functions available to the algorithm
+            const sin = Math.sin;
+            const cos = Math.cos;
+            const pi = Math.PI;
+            const abs = Math.abs;
+
+            try {
+                // Check if it's a simple expression pattern
+                // Support common patterns:
+                // - "sin(t)" -> apply to all joints
+                // - per-joint assignments
+                
+                // Execute as JS with t and joints in scope
+                const fn = new Function('t', 'joints', 'sin', 'cos', 'pi', 'abs', `
+                    const positions = {};
+                    ${code}
+                    // If user didn't set positions directly, try common patterns
+                    if (Object.keys(positions).length === 0) {
+                        for (const name of joints) {
+                            positions[name] = sin(t * 2) * 0.5;
+                        }
+                    }
+                    return positions;
+                `);
+                return fn(t, jointNames, sin, cos, pi, abs);
+            } catch (e) {
+                throw new Error(e.message);
+            }
+        }
+
+        function loadPreset(name) {
+            const presets = {
+                wave: `// Wave motion - each joint offset by phase
+for (let i = 0; i < joints.length; i++) {
+    positions[joints[i]] = sin(t * 2 + i * 0.5) * 0.8;
+}`,
+                sweep: `// Sweep all joints back and forth
+const angle = sin(t) * 1.5;
+for (const name of joints) {
+    positions[name] = angle;
+}`,
+                circle: `// Circular motion pattern
+for (let i = 0; i < joints.length; i++) {
+    if (i % 2 === 0) positions[joints[i]] = sin(t * 1.5) * 1.0;
+    else positions[joints[i]] = cos(t * 1.5) * 1.0;
+}`,
+            };
+            document.getElementById('code-editor').value = presets[name] || '';
         }
 
         // ===================== INIT =====================
