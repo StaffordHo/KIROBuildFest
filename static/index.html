@@ -231,6 +231,37 @@ def control(t, joints):
         </div>
     </div>
 
+    <!-- Kiro Badge -->
+    <a href="https://kiro.dev" target="_blank" style="position:absolute;bottom:16px;right:16px;z-index:100;text-decoration:none;
+        background:rgba(22,27,34,0.9);border:1px solid #30363d;border-radius:8px;padding:8px 14px;display:flex;align-items:center;gap:8px;">
+        <span style="font-size:14px;">⚡</span>
+        <span style="font-size:11px;color:#8b949e;">Built with <span style="color:#58a6ff;font-weight:600;">Kiro</span></span>
+    </a>
+
+    <!-- AI Assistant Panel -->
+    <div id="ai-panel" style="position:absolute;bottom:60px;right:16px;z-index:100;width:280px;
+        background:rgba(22,27,34,0.95);border:1px solid #30363d;border-radius:12px;padding:14px;
+        backdrop-filter:blur(10px);display:none;">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">
+            <span style="font-size:12px;color:#58a6ff;font-weight:600;">🤖 AI Robot Programmer</span>
+            <button onclick="toggleAI()" style="padding:2px 8px;font-size:10px;">✕</button>
+        </div>
+        <div id="ai-messages" style="height:150px;overflow-y:auto;margin-bottom:8px;font-size:11px;color:#e6edf3;">
+            <div style="color:#8b949e;padding:4px;">Describe what you want the robot to do in natural language. I'll generate the control algorithm.</div>
+        </div>
+        <div style="display:flex;gap:4px;">
+            <input id="ai-input" type="text" placeholder="e.g. 'make the arm wave hello'" 
+                style="flex:1;padding:6px 8px;background:#0d1117;border:1px solid #30363d;border-radius:4px;color:#e6edf3;font-size:11px;"
+                onkeydown="if(event.key==='Enter')sendAIPrompt()">
+            <button onclick="sendAIPrompt()" style="padding:6px 10px;font-size:11px;">→</button>
+        </div>
+    </div>
+
+    <!-- AI Toggle Button -->
+    <button onclick="toggleAI()" style="position:absolute;bottom:60px;right:16px;z-index:99;
+        background:rgba(22,27,34,0.9);border:1px solid #58a6ff;border-radius:50%;width:40px;height:40px;
+        display:flex;align-items:center;justify-content:center;font-size:18px;" id="ai-toggle-btn">🤖</button>
+
     <!-- Telemetry -->
     <div id="info">
         <h3>Telemetry</h3>
@@ -1490,6 +1521,87 @@ for (let i = 0; i < joints.length; i++) {
             }
         }
 
+        // ===================== AI ASSISTANT =====================
+        function toggleAI() {
+            const panel = document.getElementById('ai-panel');
+            const btn = document.getElementById('ai-toggle-btn');
+            if (panel.style.display === 'none') {
+                panel.style.display = 'block';
+                btn.style.display = 'none';
+            } else {
+                panel.style.display = 'none';
+                btn.style.display = 'flex';
+            }
+        }
+
+        function sendAIPrompt() {
+            const input = document.getElementById('ai-input');
+            const prompt = input.value.trim();
+            if (!prompt) return;
+
+            const messages = document.getElementById('ai-messages');
+            messages.innerHTML += `<div style="color:#58a6ff;padding:4px 0;">You: ${prompt}</div>`;
+            input.value = '';
+
+            // Generate algorithm from natural language (local heuristic for now)
+            const algorithm = generateAlgorithmFromPrompt(prompt);
+            messages.innerHTML += `<div style="color:#7ee787;padding:4px 0;">AI: Generated algorithm ✓</div>`;
+            messages.scrollTop = messages.scrollHeight;
+
+            // Load into editor
+            document.getElementById('code-editor').value = algorithm;
+        }
+
+        function generateAlgorithmFromPrompt(prompt) {
+            // Simple NL-to-code mapping (will be replaced with Bedrock)
+            const p = prompt.toLowerCase();
+
+            if (p.includes('wave') || p.includes('hello')) {
+                return `// Wave hello motion
+for (let i = 0; i < joints.length; i++) {
+    if (i === 0) positions[joints[i]] = 0; // Keep base still
+    else positions[joints[i]] = sin(t * 4 + i) * (i === 1 ? 0.3 : 0.5);
+}`;
+            } else if (p.includes('pick') || p.includes('grab') || p.includes('reach')) {
+                return `// Reach and pick motion
+const phase = t % 4;
+if (phase < 2) {
+    positions[joints[0]] = sin(t * 0.5) * 0.3;
+    positions[joints[1]] = -0.5 - sin(t) * 0.2;
+    for (let i = 2; i < joints.length; i++) positions[joints[i]] = 0.3 + sin(t + i) * 0.1;
+} else {
+    positions[joints[0]] = 0.3;
+    positions[joints[1]] = -0.3;
+    for (let i = 2; i < joints.length; i++) positions[joints[i]] = 0.1;
+}`;
+            } else if (p.includes('spin') || p.includes('rotate')) {
+                return `// Continuous rotation
+positions[joints[0]] = t * 0.5; // Base rotates
+for (let i = 1; i < joints.length; i++) {
+    positions[joints[i]] = sin(t + i * 0.3) * 0.4;
+}`;
+            } else if (p.includes('walk') || p.includes('gait') || p.includes('trot')) {
+                return `// Walking trot gait
+for (let i = 0; i < joints.length; i++) {
+    const leg = Math.floor(i / 3);
+    const joint = i % 3;
+    const phase = (leg % 2 === 0) ? 0 : pi;
+    positions[joints[i]] = sin(t * 3 + phase) * (joint === 0 ? 0.2 : 0.5);
+}`;
+            } else if (p.includes('home') || p.includes('zero') || p.includes('rest')) {
+                return `// Return to home position
+for (const name of joints) {
+    positions[name] = 0;
+}`;
+            } else {
+                // Default: gentle oscillation
+                return `// Generated from: "${prompt}"
+for (let i = 0; i < joints.length; i++) {
+    positions[joints[i]] = sin(t * 2 + i * 0.7) * 0.5;
+}`;
+            }
+        }
+
         // ===================== ENVIRONMENTS =====================
         let environmentGroup = null;
 
@@ -1499,75 +1611,78 @@ for (let i = 0; i < joints.length; i++) {
             environmentGroup = new THREE.Group();
 
             if (type === 'tabletop') {
-                // Table
+                // Table positioned in front of robot (reachable workspace)
                 const tableTop = new THREE.Mesh(
-                    new THREE.BoxGeometry(0.8, 0.03, 0.6),
+                    new THREE.BoxGeometry(0.6, 0.03, 0.5),
                     new THREE.MeshStandardMaterial({ color: 0x8B5E3C, roughness: 0.7 })
                 );
-                tableTop.position.set(0.3, 0.35, 0);
+                tableTop.position.set(0.4, 0.35, 0);
                 tableTop.castShadow = true;
                 tableTop.receiveShadow = true;
                 environmentGroup.add(tableTop);
 
                 // Table legs
-                const legGeo = new THREE.CylinderGeometry(0.02, 0.02, 0.35, 8);
+                const legGeo = new THREE.CylinderGeometry(0.015, 0.015, 0.35, 8);
                 const legMat = new THREE.MeshStandardMaterial({ color: 0x5C3A1E, roughness: 0.8 });
-                const legOffsets = [[0.35, 0, 0.25], [0.35, 0, -0.25], [-0.05, 0, 0.25], [-0.05, 0, -0.25]];
-                for (const [lx, ly, lz] of legOffsets) {
+                const legOffsets = [[0.25, 0.2], [0.25, -0.2], [-0.25, 0.2], [-0.25, -0.2]];
+                for (const [lx, lz] of legOffsets) {
                     const leg = new THREE.Mesh(legGeo, legMat);
-                    leg.position.set(0.3 + lx - 0.15, 0.175, lz);
+                    leg.position.set(0.4 + lx, 0.175, lz);
                     leg.castShadow = true;
                     environmentGroup.add(leg);
                 }
 
-                // Objects on table
-                const boxGeo = new THREE.BoxGeometry(0.05, 0.05, 0.05);
+                // Objects on table — within arm reach
                 const objects = [
-                    { pos: [0.2, 0.39, 0.1], color: 0xe63946 },
-                    { pos: [0.35, 0.39, -0.05], color: 0x457b9d },
-                    { pos: [0.45, 0.39, 0.15], color: 0x2a9d8f },
+                    { geo: new THREE.BoxGeometry(0.04, 0.04, 0.04), pos: [0.3, 0.39, 0.1], color: 0xe63946 },
+                    { geo: new THREE.BoxGeometry(0.04, 0.04, 0.04), pos: [0.45, 0.39, -0.08], color: 0x457b9d },
+                    { geo: new THREE.BoxGeometry(0.035, 0.035, 0.035), pos: [0.5, 0.385, 0.12], color: 0x2a9d8f },
+                    { geo: new THREE.CylinderGeometry(0.015, 0.015, 0.06, 16), pos: [0.35, 0.4, -0.12], color: 0xf4a261 },
+                    { geo: new THREE.SphereGeometry(0.02, 12, 12), pos: [0.55, 0.38, 0.0], color: 0x9b59b6 },
                 ];
                 for (const obj of objects) {
-                    const mesh = new THREE.Mesh(boxGeo, new THREE.MeshStandardMaterial({ color: obj.color, roughness: 0.4 }));
+                    const mesh = new THREE.Mesh(obj.geo, new THREE.MeshStandardMaterial({ color: obj.color, roughness: 0.4 }));
                     mesh.position.set(...obj.pos);
                     mesh.castShadow = true;
                     environmentGroup.add(mesh);
                 }
 
-                // Cylinder object
-                const cylObj = new THREE.Mesh(
-                    new THREE.CylinderGeometry(0.02, 0.02, 0.08, 16),
-                    new THREE.MeshStandardMaterial({ color: 0xf4a261, roughness: 0.3, metalness: 0.5 })
-                );
-                cylObj.position.set(0.15, 0.41, -0.1);
-                cylObj.castShadow = true;
-                environmentGroup.add(cylObj);
+                // Target placement zones (semi-transparent)
+                const zoneGeo = new THREE.BoxGeometry(0.08, 0.005, 0.08);
+                const zoneMat = new THREE.MeshStandardMaterial({ color: 0x00ff88, transparent: true, opacity: 0.3 });
+                const zone1 = new THREE.Mesh(zoneGeo, zoneMat);
+                zone1.position.set(0.25, 0.37, -0.15);
+                environmentGroup.add(zone1);
+                const zone2 = new THREE.Mesh(zoneGeo.clone(), new THREE.MeshStandardMaterial({ color: 0xff8800, transparent: true, opacity: 0.3 }));
+                zone2.position.set(0.55, 0.37, 0.15);
+                environmentGroup.add(zone2);
 
             } else if (type === 'warehouse') {
-                // Floor markings
+                // Floor markings - around the robot workspace
                 const lineGeo = new THREE.BoxGeometry(2, 0.002, 0.02);
                 const lineMat = new THREE.MeshStandardMaterial({ color: 0xf4a261, emissive: 0xf4a261, emissiveIntensity: 0.2 });
-                for (let z = -0.5; z <= 0.5; z += 0.5) {
+                for (let z = -0.8; z <= 0.8; z += 0.8) {
                     const line = new THREE.Mesh(lineGeo, lineMat);
                     line.position.set(0, 0.001, z);
                     environmentGroup.add(line);
                 }
 
-                // Shelves
+                // Shelves - placed BEHIND and to the SIDES, leaving center clear
                 const shelfMat = new THREE.MeshStandardMaterial({ color: 0x4a4a4a, metalness: 0.8, roughness: 0.3 });
-                for (let x = -0.6; x <= 0.6; x += 0.6) {
-                    const shelf = new THREE.Mesh(new THREE.BoxGeometry(0.1, 0.5, 0.4), shelfMat);
-                    shelf.position.set(x, 0.25, 0.7);
+                const shelfPositions = [[-0.7, 0.6], [0.0, 0.6], [0.7, 0.6]]; // Behind robot
+                for (const [sx, sz] of shelfPositions) {
+                    const shelf = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.5, 0.35), shelfMat);
+                    shelf.position.set(sx, 0.25, sz);
                     shelf.castShadow = true;
                     environmentGroup.add(shelf);
 
                     // Shelf levels
                     for (let y = 0.15; y <= 0.45; y += 0.15) {
                         const level = new THREE.Mesh(
-                            new THREE.BoxGeometry(0.09, 0.01, 0.38),
+                            new THREE.BoxGeometry(0.11, 0.01, 0.33),
                             new THREE.MeshStandardMaterial({ color: 0x666666 })
                         );
-                        level.position.set(x, y, 0.7);
+                        level.position.set(sx, y, sz);
                         environmentGroup.add(level);
                     }
 
@@ -1578,36 +1693,43 @@ for (let i = 0; i < joints.length; i++) {
                             new THREE.BoxGeometry(0.06, 0.06, 0.06),
                             new THREE.MeshStandardMaterial({ color: boxColors[Math.floor(Math.random() * 4)], roughness: 0.5 })
                         );
-                        box.position.set(x, y, 0.7);
+                        box.position.set(sx + (Math.random() - 0.5) * 0.04, y, sz);
                         box.castShadow = true;
                         environmentGroup.add(box);
                     }
                 }
 
-                // Pallets
+                // Pallets - to the sides
                 const palletGeo = new THREE.BoxGeometry(0.3, 0.02, 0.3);
                 const palletMat = new THREE.MeshStandardMaterial({ color: 0x8B5E3C, roughness: 0.9 });
                 const pallet1 = new THREE.Mesh(palletGeo, palletMat);
-                pallet1.position.set(-0.5, 0.01, -0.5);
+                pallet1.position.set(-0.7, 0.01, -0.5);
                 environmentGroup.add(pallet1);
 
-                // Stacked boxes on pallet
+                const pallet2 = new THREE.Mesh(palletGeo.clone(), palletMat);
+                pallet2.position.set(0.7, 0.01, -0.5);
+                environmentGroup.add(pallet2);
+
+                // Stacked boxes on pallets
                 for (let i = 0; i < 3; i++) {
                     const crate = new THREE.Mesh(
                         new THREE.BoxGeometry(0.12, 0.1, 0.12),
                         new THREE.MeshStandardMaterial({ color: 0x6b4c3b, roughness: 0.8 })
                     );
-                    crate.position.set(-0.5, 0.07 + i * 0.1, -0.5);
+                    crate.position.set(-0.7, 0.07 + i * 0.1, -0.5);
                     crate.castShadow = true;
                     environmentGroup.add(crate);
                 }
 
-                // Safety cone
-                const coneGeo = new THREE.ConeGeometry(0.03, 0.1, 8);
+                // Safety cones - marking the workspace boundary
+                const coneGeo = new THREE.ConeGeometry(0.02, 0.08, 8);
                 const coneMat = new THREE.MeshStandardMaterial({ color: 0xff6600, emissive: 0xff6600, emissiveIntensity: 0.1 });
-                const cone = new THREE.Mesh(coneGeo, coneMat);
-                cone.position.set(0.4, 0.05, -0.3);
-                environmentGroup.add(cone);
+                const conePositions = [[0.4, -0.4], [-0.4, -0.4], [0.4, 0.4], [-0.4, 0.4]];
+                for (const [cx, cz] of conePositions) {
+                    const cone = new THREE.Mesh(coneGeo, coneMat);
+                    cone.position.set(cx, 0.04, cz);
+                    environmentGroup.add(cone);
+                }
 
             } else if (type === 'outdoor') {
                 // Grass-colored ground override
