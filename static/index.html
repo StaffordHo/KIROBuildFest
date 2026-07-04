@@ -280,21 +280,33 @@ def control(t, joints):
     </a>
 
     <!-- AI Assistant Panel -->
-    <div id="ai-panel" style="position:absolute;bottom:60px;right:16px;z-index:100;width:280px;
+    <div id="ai-panel" style="position:absolute;bottom:60px;right:16px;z-index:100;width:320px;
         background:rgba(22,27,34,0.95);border:1px solid #30363d;border-radius:12px;padding:14px;
         backdrop-filter:blur(10px);display:none;">
-        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">
-            <span style="font-size:12px;color:#58a6ff;font-weight:600;">🤖 AI Robot Programmer</span>
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
+            <span style="font-size:13px;color:#58a6ff;font-weight:600;">🤖 AI Robot Programmer</span>
             <button onclick="toggleAI()" style="padding:2px 8px;font-size:10px;">✕</button>
         </div>
-        <div id="ai-messages" style="height:150px;overflow-y:auto;margin-bottom:8px;font-size:11px;color:#e6edf3;">
-            <div style="color:#8b949e;padding:4px;">Describe what you want the robot to do in natural language. I'll generate the control algorithm.</div>
+        <p style="font-size:10px;color:#8b949e;margin-bottom:8px;">Describe what you want the robot to do. I'll generate a control algorithm you can run immediately.</p>
+        <div id="ai-messages" style="height:140px;overflow-y:auto;margin-bottom:8px;font-size:11px;color:#e6edf3;border:1px solid #21262d;border-radius:6px;padding:8px;background:#0d1117;">
+            <div style="color:#8b949e;margin-bottom:6px;">💡 Try these prompts:</div>
+            <div class="ai-suggestion" onclick="useAISuggestion(this)" style="color:#58a6ff;cursor:pointer;padding:2px 0;font-size:10px;">• "wave hello"</div>
+            <div class="ai-suggestion" onclick="useAISuggestion(this)" style="color:#58a6ff;cursor:pointer;padding:2px 0;font-size:10px;">• "reach forward and grab"</div>
+            <div class="ai-suggestion" onclick="useAISuggestion(this)" style="color:#58a6ff;cursor:pointer;padding:2px 0;font-size:10px;">• "walk with trot gait"</div>
+            <div class="ai-suggestion" onclick="useAISuggestion(this)" style="color:#58a6ff;cursor:pointer;padding:2px 0;font-size:10px;">• "spin the base joint"</div>
+            <div class="ai-suggestion" onclick="useAISuggestion(this)" style="color:#58a6ff;cursor:pointer;padding:2px 0;font-size:10px;">• "move joints to 45 degrees"</div>
+            <div class="ai-suggestion" onclick="useAISuggestion(this)" style="color:#58a6ff;cursor:pointer;padding:2px 0;font-size:10px;">• "dance motion"</div>
+            <div class="ai-suggestion" onclick="useAISuggestion(this)" style="color:#58a6ff;cursor:pointer;padding:2px 0;font-size:10px;">• "slow oscillation"</div>
+            <div class="ai-suggestion" onclick="useAISuggestion(this)" style="color:#58a6ff;cursor:pointer;padding:2px 0;font-size:10px;">• "go to home position"</div>
         </div>
         <div style="display:flex;gap:4px;">
-            <input id="ai-input" type="text" placeholder="e.g. 'make the arm wave hello'" 
-                style="flex:1;padding:6px 8px;background:#0d1117;border:1px solid #30363d;border-radius:4px;color:#e6edf3;font-size:11px;"
+            <input id="ai-input" type="text" placeholder="e.g. 'wave hello' or 'pick up object'" 
+                style="flex:1;padding:8px 10px;background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#e6edf3;font-size:12px;"
                 onkeydown="if(event.key==='Enter')sendAIPrompt()">
-            <button onclick="sendAIPrompt()" style="padding:6px 10px;font-size:11px;">→</button>
+            <button onclick="sendAIPrompt()" style="padding:8px 12px;font-size:12px;background:#1f6feb;border-color:#58a6ff;">Send</button>
+        </div>
+        <div style="margin-top:6px;display:flex;gap:4px;">
+            <button onclick="sendAIPrompt();runAlgorithm()" style="width:100%;font-size:10px;padding:5px;background:#238636;border-color:#3fb950;">Send & Run ▶</button>
         </div>
     </div>
 
@@ -1585,72 +1597,271 @@ for (let i = 0; i < joints.length; i++) {
             }
         }
 
+        function useAISuggestion(el) {
+            const text = el.textContent.replace('• ', '').replace(/"/g, '');
+            document.getElementById('ai-input').value = text;
+            sendAIPrompt();
+        }
+
         function sendAIPrompt() {
             const input = document.getElementById('ai-input');
             const prompt = input.value.trim();
             if (!prompt) return;
 
             const messages = document.getElementById('ai-messages');
-            messages.innerHTML += `<div style="color:#58a6ff;padding:4px 0;">You: ${prompt}</div>`;
-            input.value = '';
+            messages.innerHTML += `<div style="color:#e6edf3;padding:4px 0;border-top:1px solid #21262d;margin-top:4px;"><strong style="color:#58a6ff;">You:</strong> ${prompt}</div>`;
 
-            // Generate algorithm from natural language (local heuristic for now)
+            // Generate algorithm from natural language
             const algorithm = generateAlgorithmFromPrompt(prompt);
-            messages.innerHTML += `<div style="color:#7ee787;padding:4px 0;">AI: Generated algorithm ✓</div>`;
+            messages.innerHTML += `<div style="color:#3fb950;padding:4px 0;"><strong>AI:</strong> ✓ Algorithm generated — loaded into editor</div>`;
             messages.scrollTop = messages.scrollHeight;
 
             // Load into editor
             document.getElementById('code-editor').value = algorithm;
+            input.value = '';
         }
 
         function generateAlgorithmFromPrompt(prompt) {
-            // Simple NL-to-code mapping (will be replaced with Bedrock)
-            const p = prompt.toLowerCase();
+            const p = prompt.toLowerCase().trim();
 
-            if (p.includes('wave') || p.includes('hello')) {
-                return `// Wave hello motion
+            // Parse structured parameters from the prompt
+            const params = parsePromptParams(p);
+
+            // Compose algorithm from detected intents
+            const intents = detectIntents(p);
+
+            if (intents.length === 0) {
+                // Fallback: generic responsive motion
+                return `// "${prompt}" — adaptive motion
+const speed = 2.0;
+const amp = 0.6;
 for (let i = 0; i < joints.length; i++) {
-    if (i === 0) positions[joints[i]] = 0; // Keep base still
-    else positions[joints[i]] = sin(t * 4 + i) * (i === 1 ? 0.3 : 0.5);
-}`;
-            } else if (p.includes('pick') || p.includes('grab') || p.includes('reach')) {
-                return `// Reach and pick motion
-const phase = t % 4;
-if (phase < 2) {
-    positions[joints[0]] = sin(t * 0.5) * 0.3;
-    positions[joints[1]] = -0.5 - sin(t) * 0.2;
-    for (let i = 2; i < joints.length; i++) positions[joints[i]] = 0.3 + sin(t + i) * 0.1;
-} else {
-    positions[joints[0]] = 0.3;
-    positions[joints[1]] = -0.3;
-    for (let i = 2; i < joints.length; i++) positions[joints[i]] = 0.1;
-}`;
-            } else if (p.includes('spin') || p.includes('rotate')) {
-                return `// Continuous rotation
-positions[joints[0]] = t * 0.5; // Base rotates
-for (let i = 1; i < joints.length; i++) {
-    positions[joints[i]] = sin(t + i * 0.3) * 0.4;
-}`;
-            } else if (p.includes('walk') || p.includes('gait') || p.includes('trot')) {
-                return `// Walking trot gait
-for (let i = 0; i < joints.length; i++) {
-    const leg = Math.floor(i / 3);
-    const joint = i % 3;
-    const phase = (leg % 2 === 0) ? 0 : pi;
-    positions[joints[i]] = sin(t * 3 + phase) * (joint === 0 ? 0.2 : 0.5);
-}`;
-            } else if (p.includes('home') || p.includes('zero') || p.includes('rest')) {
-                return `// Return to home position
-for (const name of joints) {
-    positions[name] = 0;
-}`;
-            } else {
-                // Default: gentle oscillation
-                return `// Generated from: "${prompt}"
-for (let i = 0; i < joints.length; i++) {
-    positions[joints[i]] = sin(t * 2 + i * 0.7) * 0.5;
+    positions[joints[i]] = sin(t * speed + i * pi / joints.length) * amp * (1 - i * 0.04);
 }`;
             }
+
+            return buildAlgorithm(intents, params, prompt);
+        }
+
+        function parsePromptParams(p) {
+            const params = {};
+            // Extract numeric values
+            const angleMatch = p.match(/(\d+)\s*(degree|deg|°)/);
+            if (angleMatch) params.angle = parseFloat(angleMatch[1]) * Math.PI / 180;
+
+            const speedMatch = p.match(/(slow|fast|quick|rapid|gentle)/);
+            if (speedMatch) {
+                const speedMap = { slow: 0.5, gentle: 0.7, fast: 5, quick: 4, rapid: 8 };
+                params.speed = speedMap[speedMatch[1]] || 2;
+            } else { params.speed = 2; }
+
+            const ampMatch = p.match(/(small|big|large|tiny|full)/);
+            if (ampMatch) {
+                const ampMap = { tiny: 0.2, small: 0.3, big: 0.8, large: 1.0, full: 1.5 };
+                params.amplitude = ampMap[ampMatch[1]] || 0.6;
+            } else { params.amplitude = 0.6; }
+
+            const jointMatch = p.match(/joint\s*(\d+)/);
+            if (jointMatch) params.targetJoint = parseInt(jointMatch[1]) - 1;
+
+            const timeMatch = p.match(/(\d+)\s*second/);
+            if (timeMatch) params.duration = parseFloat(timeMatch[1]);
+
+            const repMatch = p.match(/(\d+)\s*(time|rep)/);
+            if (repMatch) params.repetitions = parseInt(repMatch[1]);
+
+            return params;
+        }
+
+        function detectIntents(p) {
+            const intents = [];
+            // Motion type
+            if (p.includes('wave') || p.includes('hello') || p.includes('greet')) intents.push('wave');
+            if (p.includes('pick') || p.includes('grab') || p.includes('grasp') || p.includes('grip')) intents.push('pick');
+            if (p.includes('place') || p.includes('put') || p.includes('drop') || p.includes('release')) intents.push('place');
+            if (p.includes('reach') || p.includes('extend') || p.includes('stretch')) intents.push('reach');
+            if (p.includes('walk') || p.includes('gait') || p.includes('trot') || p.includes('step')) intents.push('walk');
+            if (p.includes('spin') || p.includes('rotate') || p.includes('turn')) intents.push('spin');
+            if (p.includes('dance') || p.includes('party') || p.includes('groove')) intents.push('dance');
+            if (p.includes('circle') || p.includes('circular') || p.includes('orbit')) intents.push('circle');
+            if (p.includes('home') || p.includes('zero') || p.includes('rest') || p.includes('reset')) intents.push('home');
+            if (p.includes('point') || p.includes('aim') || p.includes('track') || p.includes('follow')) intents.push('track');
+            if (p.includes('scan') || p.includes('sweep') || p.includes('search') || p.includes('look around')) intents.push('scan');
+            if (p.includes('nod') || p.includes('yes')) intents.push('nod');
+            if (p.includes('shake') || p.includes('no')) intents.push('shake');
+            if (p.includes('push') || p.includes('press')) intents.push('push');
+            if (p.includes('pull') || p.includes('retract')) intents.push('pull');
+            if (p.includes('lift') || p.includes('raise') || p.includes('up')) intents.push('lift');
+            if (p.includes('lower') || p.includes('down')) intents.push('lower');
+            if (p.includes('open') || p.includes('spread')) intents.push('open');
+            if (p.includes('close') || p.includes('fold') || p.includes('tuck')) intents.push('close');
+            if (p.includes('fast') || p.includes('quick') || p.includes('rapid')) intents.push('fast');
+            if (p.includes('slow') || p.includes('gentle') || p.includes('smooth')) intents.push('slow');
+            if (p.includes('stop') || p.includes('freeze') || p.includes('hold')) intents.push('stop');
+            if (p.includes('random') || p.includes('chaotic')) intents.push('random');
+            // Specific joint control
+            if (p.match(/joint\s*\d+/)) intents.push('specific_joint');
+            if (p.match(/\d+\s*(degree|deg|°)/)) intents.push('angle');
+            return intents;
+        }
+
+        function buildAlgorithm(intents, params, originalPrompt) {
+            const speed = params.speed || 2;
+            const amp = params.amplitude || 0.6;
+            let code = `// AI Generated: "${originalPrompt}"\n`;
+
+            // Handle specific joint targeting
+            if (intents.includes('specific_joint') && params.targetJoint !== undefined) {
+                const j = params.targetJoint;
+                const angle = params.angle || (amp);
+                code += `// Target: joint ${j + 1}\n`;
+                code += `for (let i = 0; i < joints.length; i++) positions[joints[i]] = 0;\n`;
+                if (intents.includes('angle')) {
+                    code += `positions[joints[${j}]] = ${angle.toFixed(4)}; // ${(angle * 180 / Math.PI).toFixed(0)}°\n`;
+                } else {
+                    code += `positions[joints[${j}]] = sin(t * ${speed}) * ${amp.toFixed(2)};\n`;
+                }
+                return code;
+            }
+
+            // Handle pure angle setting
+            if (intents.includes('angle') && !intents.includes('specific_joint')) {
+                const angle = params.angle || Math.PI / 4;
+                code += `const target = ${angle.toFixed(4)}; // ${(angle * 180 / Math.PI).toFixed(0)} degrees\n`;
+                code += `for (let i = 0; i < joints.length; i++) {\n`;
+                code += `    positions[joints[i]] = target;\n}\n`;
+                return code;
+            }
+
+            // Compose based on primary intent
+            const primary = intents[0];
+            switch (primary) {
+                case 'wave':
+                    code += `// Wave motion: shoulder up + elbow oscillation\n`;
+                    code += `positions[joints[0]] = 0.2;\n`;
+                    code += `if (joints.length > 1) positions[joints[1]] = -1.2;\n`;
+                    code += `if (joints.length > 2) positions[joints[2]] = sin(t * ${speed * 3}) * 0.7;\n`;
+                    code += `for (let i = 3; i < joints.length; i++)\n`;
+                    code += `    positions[joints[i]] = sin(t * ${speed * 2} + i) * 0.3;\n`;
+                    break;
+
+                case 'pick':
+                    code += `// Pick/grasp cycle (${params.duration || 6}s period)\n`;
+                    code += `const cycle = t % ${params.duration || 6};\n`;
+                    code += `if (cycle < 2) {\n`;
+                    code += `    positions[joints[0]] = 0.3;\n`;
+                    code += `    if (joints.length > 1) positions[joints[1]] = -0.8 - cycle * 0.15;\n`;
+                    code += `    if (joints.length > 2) positions[joints[2]] = 0.5;\n`;
+                    code += `} else if (cycle < 3.5) {\n`;
+                    code += `    positions[joints[0]] = 0.3;\n`;
+                    code += `    if (joints.length > 1) positions[joints[1]] = -1.1;\n`;
+                    code += `    if (joints.length > 2) positions[joints[2]] = 0.65;\n`;
+                    code += `} else {\n`;
+                    code += `    positions[joints[0]] = -0.4;\n`;
+                    code += `    if (joints.length > 1) positions[joints[1]] = -0.4;\n`;
+                    code += `    if (joints.length > 2) positions[joints[2]] = 0.3;\n`;
+                    code += `}\nfor (let i = 3; i < joints.length; i++) positions[joints[i]] = 0.1;\n`;
+                    break;
+
+                case 'walk':
+                    code += `// Trot gait (diagonal pairs)\n`;
+                    code += `const freq = ${speed * 1.5};\n`;
+                    code += `for (let i = 0; i < joints.length; i++) {\n`;
+                    code += `    const leg = Math.floor(i / 3);\n`;
+                    code += `    const jIdx = i % 3;\n`;
+                    code += `    const phase = (leg === 0 || leg === 3) ? 0 : pi;\n`;
+                    code += `    if (jIdx === 0) positions[joints[i]] = sin(t * freq + phase) * 0.12;\n`;
+                    code += `    else if (jIdx === 1) positions[joints[i]] = 0.3 + sin(t * freq + phase) * ${amp * 0.8};\n`;
+                    code += `    else positions[joints[i]] = -0.6 + abs(sin(t * freq + phase)) * 0.4;\n`;
+                    code += `}\n`;
+                    break;
+
+                case 'spin':
+                    code += `positions[joints[0]] = t * ${speed * 0.5};\n`;
+                    code += `for (let i = 1; i < joints.length; i++)\n`;
+                    code += `    positions[joints[i]] = ${amp > 0.5 ? '-0.5' : '0.2'};\n`;
+                    break;
+
+                case 'dance':
+                    code += `const beat = t * ${speed * 2};\n`;
+                    code += `for (let i = 0; i < joints.length; i++) {\n`;
+                    code += `    const phase = i * pi / 3;\n`;
+                    code += `    positions[joints[i]] = sin(beat + phase) * ${amp} * cos(beat * 0.3 + i);\n`;
+                    code += `}\n`;
+                    break;
+
+                case 'circle':
+                    code += `positions[joints[0]] = sin(t * ${speed * 0.75}) * ${amp};\n`;
+                    code += `if (joints.length > 1) positions[joints[1]] = -0.5 + cos(t * ${speed * 0.75}) * 0.3;\n`;
+                    code += `if (joints.length > 2) positions[joints[2]] = 0.5 + sin(t * ${speed * 0.75}) * 0.2;\n`;
+                    code += `for (let i = 3; i < joints.length; i++)\n`;
+                    code += `    positions[joints[i]] = cos(t * ${speed * 0.75} + i) * 0.2;\n`;
+                    break;
+
+                case 'scan':
+                    code += `// Scanning sweep pattern\n`;
+                    code += `positions[joints[0]] = sin(t * ${speed * 0.3}) * 1.5; // wide base sweep\n`;
+                    code += `if (joints.length > 1) positions[joints[1]] = -0.3 + sin(t * ${speed * 0.5}) * 0.2;\n`;
+                    code += `for (let i = 2; i < joints.length; i++) positions[joints[i]] = 0.2;\n`;
+                    break;
+
+                case 'track':
+                    code += `// Target tracking\nconst tx = sin(t * 0.8);\nconst tz = cos(t * 0.5) * 0.5;\n`;
+                    code += `positions[joints[0]] = tx;\n`;
+                    code += `if (joints.length > 1) positions[joints[1]] = -0.4 + tz * 0.3;\n`;
+                    code += `for (let i = 2; i < joints.length; i++) positions[joints[i]] = sin(t * 0.3 + i) * 0.1;\n`;
+                    break;
+
+                case 'nod':
+                    code += `// Nodding motion (joint 2 oscillates)\n`;
+                    code += `for (let i = 0; i < joints.length; i++) positions[joints[i]] = 0;\n`;
+                    code += `if (joints.length > 1) positions[joints[1]] = sin(t * ${speed * 2}) * 0.4;\n`;
+                    break;
+
+                case 'shake':
+                    code += `// Head shake (base oscillates)\n`;
+                    code += `positions[joints[0]] = sin(t * ${speed * 3}) * 0.5;\n`;
+                    code += `for (let i = 1; i < joints.length; i++) positions[joints[i]] = 0;\n`;
+                    break;
+
+                case 'lift':
+                    code += `if (joints.length > 1) positions[joints[1]] = -1.5;\n`;
+                    code += `for (let i = 0; i < joints.length; i++) if (i !== 1) positions[joints[i]] = 0;\n`;
+                    break;
+
+                case 'lower':
+                    code += `if (joints.length > 1) positions[joints[1]] = 0.5;\n`;
+                    code += `for (let i = 0; i < joints.length; i++) if (i !== 1) positions[joints[i]] = 0;\n`;
+                    break;
+
+                case 'home':
+                    code += `for (let i = 0; i < joints.length; i++) positions[joints[i]] = 0;\n`;
+                    break;
+
+                case 'stop':
+                    code += `// Hold current position (no change)\n`;
+                    break;
+
+                case 'random':
+                    code += `for (let i = 0; i < joints.length; i++) {\n`;
+                    code += `    positions[joints[i]] = sin(t * (1.5 + i * 0.7) + i * 3.7) * (0.3 + 0.4 * abs(sin(i * 2.1)));\n`;
+                    code += `}\n`;
+                    break;
+
+                default:
+                    code += `for (let i = 0; i < joints.length; i++)\n`;
+                    code += `    positions[joints[i]] = sin(t * ${speed} + i * pi / joints.length) * ${amp};\n`;
+            }
+
+            // Apply speed modifier if secondary intent
+            if (intents.includes('slow') && primary !== 'slow') {
+                code = code.replace(/t \* [\d.]+/g, (m) => m.replace(/[\d.]+/, (n) => (parseFloat(n) * 0.4).toFixed(1)));
+            }
+            if (intents.includes('fast') && primary !== 'fast') {
+                code = code.replace(/t \* [\d.]+/g, (m) => m.replace(/[\d.]+/, (n) => (parseFloat(n) * 2.5).toFixed(1)));
+            }
+
+            return code;
         }
 
         // ===================== ENVIRONMENTS =====================
