@@ -199,6 +199,44 @@ MODEL_CATALOG: list[ModelEntry] = [
         weight_kg=2.0,
         license="BSD",
     ),
+
+    # --- HUMANOID / BIPEDAL ---
+    ModelEntry(
+        id="humanoid",
+        name="Humanoid (21-DOF)",
+        description="Full humanoid bipedal model with 34 links. Suitable for whole-body control and locomotion research.",
+        category=RobotCategory.HUMANOID,
+        manufacturer="PyBullet",
+        dof=21,
+        source_url="https://raw.githubusercontent.com/bulletphysics/bullet3/master/data/humanoid.urdf",
+        tags=["humanoid", "bipedal", "locomotion", "whole-body", "research"],
+        weight_kg=75.0,
+        license="BSD",
+    ),
+    ModelEntry(
+        id="cassie",
+        name="Agility Robotics Cassie",
+        description="14-DOF bipedal robot for dynamic walking and running. Key platform in sim-to-real locomotion research.",
+        category=RobotCategory.LEGGED,
+        manufacturer="Agility Robotics",
+        dof=14,
+        source_url="https://raw.githubusercontent.com/UMich-BipedLab/cassie_description/master/urdf/cassie.urdf",
+        tags=["bipedal", "dynamic-walking", "running", "sim-to-real"],
+        weight_kg=31.0,
+        license="MIT",
+    ),
+    ModelEntry(
+        id="atlas",
+        name="Atlas Humanoid (30-DOF)",
+        description="High-DOF humanoid for advanced bipedal locomotion and manipulation. Full upper and lower body.",
+        category=RobotCategory.HUMANOID,
+        manufacturer="Boston Dynamics (model)",
+        dof=30,
+        source_url="https://raw.githubusercontent.com/openai/roboschool/master/roboschool/models_robot/atlas_description/urdf/atlas_v4_with_multisense.urdf",
+        tags=["humanoid", "bipedal", "high-dof", "locomotion", "manipulation"],
+        weight_kg=80.0,
+        license="BSD",
+    ),
 ]
 
 
