@@ -545,27 +545,56 @@ def control(t, joints):
             }
         }
 
+        // Map for linking physics link names to 3D meshes
+        let linkNameToMesh = {}; // link_name -> THREE.Mesh (joint housing)
+        let linkConnections = []; // [{parent: mesh, child: mesh, cylinder: mesh}]
+
         function updateRobotFromState(robotState) {
             if (!robotState || !robotState.links || !robotGroup) return;
 
-            // Get ordered link positions from the physics engine
             const linkEntries = Object.entries(robotState.links);
             if (linkEntries.length === 0) return;
 
-            // Rebuild the robot position from live FK data
-            // We have jointSpheres[0]=base, jointSpheres[1..N]=joints
-            // and linkCylinders[0..N-1] connecting consecutive spheres
+            // If we have named mesh mappings (from library models), use those
+            if (Object.keys(linkNameToMesh).length > 0) {
+                for (const [linkName, poseData] of linkEntries) {
+                    const mesh = linkNameToMesh[linkName];
+                    if (mesh && poseData.position) {
+                        const [x, y, z] = poseData.position;
+                        mesh.position.set(x, z, -y); // Z-up to Y-up
+                    }
+                }
+                // Update link cylinders between connected joints
+                for (const conn of linkConnections) {
+                    if (!conn.cylinder || !conn.parent || !conn.child) continue;
+                    const start = conn.parent.position;
+                    const end = conn.child.position;
+                    const dir = new THREE.Vector3().subVectors(end, start);
+                    const length = dir.length();
+                    if (length > 0.001) {
+                        conn.cylinder.position.set(
+                            (start.x + end.x) / 2,
+                            (start.y + end.y) / 2,
+                            (start.z + end.z) / 2
+                        );
+                        conn.cylinder.scale.set(1, length, 1);
+                        const up = new THREE.Vector3(0, 1, 0);
+                        conn.cylinder.quaternion.copy(
+                            new THREE.Quaternion().setFromUnitVectors(up, dir.normalize())
+                        );
+                    }
+                }
+                return;
+            }
 
-            const positions = []; // Collect all link positions in order
-
-            // Sort links: base first, then by kinematic order
+            // Fallback: generic linear arm update
+            const positions = [];
             const baseLink = linkEntries.find(([name]) => name.includes('link_0') || name.includes('base'));
             const otherLinks = linkEntries.filter(([name]) => !name.includes('link_0') && !name.includes('base'));
 
-            // Build ordered position list
             if (baseLink) {
                 const [x, y, z] = baseLink[1].position;
-                positions.push(new THREE.Vector3(x, z, -y)); // Z-up to Y-up
+                positions.push(new THREE.Vector3(x, z, -y));
             }
             for (const [name, poseData] of otherLinks) {
                 if (poseData.position) {
@@ -574,47 +603,23 @@ def control(t, joints):
                 }
             }
 
-            // Update joint sphere positions
             for (let i = 0; i < Math.min(positions.length, jointSpheres.length); i++) {
                 jointSpheres[i].position.copy(positions[i]);
             }
-
-            // Update link cylinders to stretch between consecutive positions
             for (let i = 0; i < linkCylinders.length; i++) {
                 const cyl = linkCylinders[i];
-                if (!cyl) continue;
-                if (i >= positions.length - 1) break;
-
+                if (!cyl || i >= positions.length - 1) continue;
                 const start = positions[i];
                 const end = positions[i + 1];
-
-                // Midpoint
-                cyl.position.set(
-                    (start.x + end.x) / 2,
-                    (start.y + end.y) / 2,
-                    (start.z + end.z) / 2
-                );
-
-                // Length and orientation
+                cyl.position.set((start.x + end.x) / 2, (start.y + end.y) / 2, (start.z + end.z) / 2);
                 const dir = new THREE.Vector3().subVectors(end, start);
                 const length = dir.length();
-
                 if (length > 0.001) {
-                    // Scale cylinder to link length
-                    const originalLength = cyl.geometry.parameters.height || 1;
-                    cyl.scale.set(1, length / originalLength, 1);
-
-                    // Orient along direction
-                    const up = new THREE.Vector3(0, 1, 0);
-                    const quat = new THREE.Quaternion().setFromUnitVectors(up, dir.normalize());
-                    cyl.quaternion.copy(quat);
+                    cyl.scale.set(1, length, 1);
+                    cyl.quaternion.copy(new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir.normalize()));
                 }
             }
-
-            // Update end effector
-            if (eeMesh && positions.length > 0) {
-                eeMesh.position.copy(positions[positions.length - 1]);
-            }
+            if (eeMesh && positions.length > 0) eeMesh.position.copy(positions[positions.length - 1]);
         }
 
         // ===================== API CALLS =====================
@@ -869,6 +874,8 @@ def control(t, joints):
             robotGroup = new THREE.Group();
             linkCylinders = [];
             jointSpheres = [];
+            linkNameToMesh = {};
+            linkConnections = [];
 
             if (!geometryData || !geometryData.joints) {
                 buildRobotVisual(joints, dof);
@@ -909,15 +916,19 @@ def control(t, joints):
                 const { linkName: ln, pos } = tempQueue.shift();
                 const ch = childrenOf[ln] || [];
                 for (const c of ch) {
-                    const cp = [pos[0] + c.origin.x, pos[1] + c.origin.z, pos[2] - c.origin.y];
+                    // Same coordinate conversion as main BFS: x stays, z→y, y→-z
+                    const cp = [pos[0] + c.origin.x, pos[1] + c.origin.z, pos[2] + (-c.origin.y)];
                     if (cp[1] < lowestY) lowestY = cp[1];
                     tempQueue.push({ linkName: c.child, pos: cp });
                 }
             }
-            // Offset base so lowest point is at ground (y=0)
-            const baseElevation = Math.max(0.04, -lowestY + 0.02);
+            // Offset base so lowest point is at ground (y=0) with small clearance
+            const baseElevation = Math.max(0.05, -lowestY + 0.03);
             queue[0].worldPos.y = baseElevation;
             linkPositionMap[rootLink].y = baseElevation;
+
+            // Also position root housing at correct elevation
+            rootHousing.position.y = baseElevation;
 
             // Base platform
             const baseGeo = new THREE.CylinderGeometry(0.06, 0.07, 0.04, 32);
@@ -936,6 +947,7 @@ def control(t, joints):
             rootHousing.castShadow = true;
             robotGroup.add(rootHousing);
             jointSpheres.push(rootHousing);
+            linkNameToMesh[rootLink] = rootHousing;
 
             while (queue.length > 0) {
                 const { linkName, worldPos } = queue.shift();
@@ -1002,6 +1014,16 @@ def control(t, joints):
                     housing.userData.linkName = child.child;
                     robotGroup.add(housing);
                     jointSpheres.push(housing);
+
+                    // Store name→mesh mapping for live FK updates
+                    linkNameToMesh[child.child] = housing;
+
+                    // Store connection for cylinder updates
+                    const parentMesh = linkNameToMesh[linkName] || jointSpheres[0];
+                    if (linkCylinders.length > 0) {
+                        const lastCyl = linkCylinders[linkCylinders.length - 1];
+                        linkConnections.push({ parent: parentMesh, child: housing, cylinder: lastCyl });
+                    }
 
                     // Continue BFS
                     queue.push({ linkName: child.child, worldPos: childPos });
