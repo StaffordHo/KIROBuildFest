@@ -399,6 +399,18 @@ def control(t, joints):
         let frameCount = 0;
         let lastFpsTime = Date.now();
 
+        // Forward declarations for all globals used across sections
+        let environmentGroup = null;
+        let lidarPoints = null;
+        let cameraViewEnabled = false;
+        let droneId = null;
+        let droneMesh = null;
+        let rotorMeshes = [];
+        let mobileRobotId = null;
+        let mobileRobotMesh = null;
+        let linkNameToMesh = {};
+        let linkConnections = [];
+
         // ===================== THREE.JS SETUP =====================
         function initScene() {
             const container = document.getElementById('canvas-container');
@@ -592,8 +604,6 @@ def control(t, joints):
         }
 
         // Map for linking physics link names to 3D meshes
-        let linkNameToMesh = {}; // link_name -> THREE.Mesh (joint housing)
-        let linkConnections = []; // [{parent: mesh, child: mesh, cylinder: mesh}]
 
         function updateRobotFromState(robotState) {
             if (!robotState || !robotState.links || !robotGroup) return;
@@ -1167,9 +1177,6 @@ def control(t, joints):
         }
 
         // ===================== DRONES =====================
-        let droneId = null;
-        let droneMesh = null;
-        let rotorMeshes = [];
 
         async function addDrone(type) {
             if (!worldId) { await createWorld(); }
@@ -1355,8 +1362,6 @@ def control(t, joints):
         }
 
         // ===================== MOBILE ROBOTS =====================
-        let mobileRobotId = null;
-        let mobileRobotMesh = null;
 
         async function addMobileRobot(type) {
             if (!worldId) { await createWorld(); }
@@ -2282,7 +2287,6 @@ for (let i = 0; i < joints.length; i++) {
         }
 
         // ===================== ENVIRONMENTS =====================
-        let environmentGroup = null;
 
         function loadEnvironment(type) {
             // Clear previous environment objects
@@ -2583,8 +2587,6 @@ for (let i = 0; i < joints.length; i++) {
         }
 
         // ===================== SENSOR VISUALIZATION =====================
-        let lidarPoints = null;
-        let cameraViewEnabled = false;
 
         function simulateLiDAR() {
             // Cast rays from robot base in a circle, show hit points
