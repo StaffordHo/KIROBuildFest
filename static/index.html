@@ -381,8 +381,12 @@ def control(t, joints):
     <!-- Three.js from CDN -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/STLLoader.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/ColladaLoader.js"></script>
+    <script>
+        // Optional loaders - don't block if unavailable
+        window.THREE = window.THREE || {};
+    </script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/STLLoader.js" onerror="console.log('STL loader unavailable')"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/ColladaLoader.js" onerror="console.log('Collada loader unavailable')"></script>
 
     <script>
 
@@ -410,6 +414,17 @@ def control(t, joints):
         let mobileRobotMesh = null;
         let linkNameToMesh = {};
         let linkConnections = [];
+        let algoInterval = null;
+        let algoStartTime = 0;
+        let algoSteps = 0;
+        let cumulativeReward = 0;
+        let vizWireframe = false;
+        let vizAxes = false;
+        let vizCom = false;
+        let axesHelpers = [];
+        let comMarkers = [];
+        let savedState = null;
+        let droneFlightModeInterval = null;
 
         // ===================== THREE.JS SETUP =====================
         function initScene() {
@@ -1301,7 +1316,6 @@ def control(t, joints):
         }
 
         // PX4-style flight modes
-        let droneFlightModeInterval = null;
         function droneFlightMode(mode) {
             if (droneFlightModeInterval) clearInterval(droneFlightModeInterval);
 
@@ -1475,10 +1489,6 @@ def control(t, joints):
         }
 
         // ===================== ALGORITHM TESTING =====================
-        let algoInterval = null;
-        let algoStartTime = 0;
-        let algoSteps = 0;
-        let cumulativeReward = 0;
 
         function runAlgorithm() {
             if (!worldId || !robotId || robotJoints.length === 0) {
@@ -1630,12 +1640,6 @@ for (let i = 0; i < joints.length; i++) {
         }
 
         // ===================== MUJOCO-STYLE FEATURES =====================
-        let vizWireframe = false;
-        let vizAxes = false;
-        let vizCom = false;
-        let axesHelpers = [];
-        let comMarkers = [];
-        let savedState = null;
 
         function onSpeedChange(value) {
             document.getElementById('val-speed').textContent = parseFloat(value).toFixed(1) + 'x';
