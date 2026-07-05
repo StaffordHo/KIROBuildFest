@@ -132,7 +132,6 @@ class SimplePhysicsEngine(PhysicsEnginePort):
             # Locomotion for non-fixed-base robots
             if not robot_state.is_fixed_base:
                 # Estimate forward velocity from joint motion
-                # Simple model: average joint velocity → forward motion
                 avg_vel = 0.0
                 count = 0
                 for state in robot_state.joint_states.values():
@@ -140,12 +139,10 @@ class SimplePhysicsEngine(PhysicsEnginePort):
                     count += 1
                 if count > 0:
                     avg_vel /= count
-                # Convert joint velocity to base translation (simplified gait model)
-                # Forward speed proportional to average joint speed
-                forward_speed = avg_vel * 0.02  # Scale factor
+                # Convert joint velocity to base translation
+                # Higher scale factor for visible movement
+                forward_speed = avg_vel * 0.05  # 5cm per unit joint velocity
                 robot_state.base_velocity_offset[0] += forward_speed * dt
-                # Small lateral drift based on asymmetric joint motion
-                robot_state.base_velocity_offset[1] += math.sin(robot_state.base_velocity_offset[0] * 5) * 0.001 * dt
 
     def get_joint_states(self, robot_id: int) -> dict[str, JointState]:
         """Get current joint states."""
@@ -212,10 +209,11 @@ class SimplePhysicsEngine(PhysicsEnginePort):
         if base_offset[0] != 0 or base_offset[1] != 0 or base_offset[2] != 0:
             for name in poses:
                 pos, orn = poses[name]
+                # base_velocity_offset is in URDF frame (X=forward, Y=left, Z=up)
                 poses[name] = ([
-                    pos[0] + base_offset[0],
-                    pos[1] + base_offset[1],
-                    pos[2] + base_offset[2],
+                    pos[0] + base_offset[0],  # Forward (X)
+                    pos[1] + base_offset[1],  # Lateral (Y)
+                    pos[2],                    # Keep Z (height) from contact physics
                 ], orn)
 
         return poses
