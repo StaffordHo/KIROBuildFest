@@ -159,6 +159,17 @@
                 <button id="btn-pause" onclick="controlSim('pause')">⏸ Pause</button>
                 <button id="btn-reset" onclick="controlSim('reset')">↺ Reset</button>
             </div>
+            <div class="joint-slider" style="margin-top:8px;">
+                <label><span>Speed</span><span id="val-speed">1.0x</span></label>
+                <input type="range" min="0.1" max="5" step="0.1" value="1" id="slider-speed" oninput="onSpeedChange(this.value)">
+            </div>
+            <div class="btn-group" style="margin-top:4px;">
+                <button onclick="toggleViz('wireframe')" style="font-size:10px;padding:4px 6px;">Wireframe</button>
+                <button onclick="toggleViz('axes')" style="font-size:10px;padding:4px 6px;">Axes</button>
+                <button onclick="toggleViz('com')" style="font-size:10px;padding:4px 6px;">CoM</button>
+                <button onclick="saveState()" style="font-size:10px;padding:4px 6px;">💾 Save</button>
+                <button onclick="restoreState()" style="font-size:10px;padding:4px 6px;">↩ Restore</button>
+            </div>
             <div class="btn-group" style="margin-top:6px;">
                 <button onclick="startRecording()" style="font-size:11px;">⏺ Record</button>
                 <button onclick="stopRecording()" style="font-size:11px;" class="danger">⏹ Stop Rec</button>
@@ -192,8 +203,13 @@
 
         <div class="section" id="drone-section" style="display:none;">
             <div class="section-title">Drone Control</div>
+            <div class="btn-group" style="margin-bottom:8px;">
+                <button onclick="setDroneHover()" style="font-size:10px;padding:4px 8px;">🛫 Hover</button>
+                <button onclick="setDroneLand()" style="font-size:10px;padding:4px 8px;">🛬 Land</button>
+                <button onclick="setDroneMax()" style="font-size:10px;padding:4px 8px;">⬆ Max Thrust</button>
+            </div>
             <div class="joint-slider">
-                <label><span>Thrust</span><span id="val-thrust">0.00</span></label>
+                <label><span>Thrust (0.53 = hover)</span><span id="val-thrust">0.00</span></label>
                 <input type="range" min="0" max="1" step="0.01" value="0" id="slider-thrust" oninput="onDroneSlider()">
             </div>
             <div class="joint-slider">
@@ -640,6 +656,22 @@ def control(t, joints):
 
         // ===================== API CALLS =====================
         async function createWorld() {
+            // Clear all 3D objects
+            if (robotGroup) { scene.remove(robotGroup); robotGroup = null; }
+            if (environmentGroup) { scene.remove(environmentGroup); environmentGroup = null; }
+            if (droneMesh) { droneMesh = null; }
+            if (mobileRobotMesh) { mobileRobotMesh = null; }
+            if (lidarPoints) { scene.remove(lidarPoints); lidarPoints = null; }
+            linkCylinders = []; jointSpheres = []; linkNameToMesh = {}; linkConnections = [];
+            robotId = null; robotJoints = []; droneId = null; mobileRobotId = null;
+
+            // Hide all control sections
+            document.getElementById('joints-section').style.display = 'none';
+            document.getElementById('drone-section').style.display = 'none';
+            document.getElementById('mobile-section').style.display = 'none';
+            document.getElementById('rec-status').textContent = '';
+            stopAlgorithm();
+
             const r = await fetch(`${API}/worlds`, {
                 method: 'POST',
                 headers: {'Content-Type': 'application/json'},
@@ -943,9 +975,6 @@ def control(t, joints):
             queue[0].worldPos.y = baseElevation;
             linkPositionMap[rootLink].y = baseElevation;
 
-            // Also position root housing at correct elevation
-            rootHousing.position.y = baseElevation;
-
             // Base platform
             const baseGeo = new THREE.CylinderGeometry(0.06, 0.07, 0.04, 32);
             const baseMat = new THREE.MeshStandardMaterial({ color: 0x2a2a2a, metalness: 0.8, roughness: 0.2 });
@@ -959,7 +988,7 @@ def control(t, joints):
                 new THREE.CylinderGeometry(0.035, 0.035, 0.03, 20),
                 new THREE.MeshStandardMaterial({ color: 0x4a7ab5, metalness: 0.6, roughness: 0.3 })
             );
-            rootHousing.position.set(0, 0.04, 0);
+            rootHousing.position.set(0, baseElevation, 0);
             rootHousing.castShadow = true;
             robotGroup.add(rootHousing);
             jointSpheres.push(rootHousing);
@@ -1226,6 +1255,30 @@ def control(t, joints):
             });
         }
 
+        function setDroneHover() {
+            document.getElementById('slider-thrust').value = '0.55';
+            document.getElementById('slider-roll').value = '0';
+            document.getElementById('slider-pitch').value = '0';
+            document.getElementById('slider-yaw').value = '0';
+            onDroneSlider();
+        }
+
+        function setDroneLand() {
+            document.getElementById('slider-thrust').value = '0.3';
+            document.getElementById('slider-roll').value = '0';
+            document.getElementById('slider-pitch').value = '0';
+            document.getElementById('slider-yaw').value = '0';
+            onDroneSlider();
+        }
+
+        function setDroneMax() {
+            document.getElementById('slider-thrust').value = '0.9';
+            document.getElementById('slider-roll').value = '0';
+            document.getElementById('slider-pitch').value = '0';
+            document.getElementById('slider-yaw').value = '0';
+            onDroneSlider();
+        }
+
         // ===================== MOBILE ROBOTS =====================
         let mobileRobotId = null;
         let mobileRobotMesh = null;
@@ -1452,6 +1505,115 @@ for (let i = 0; i < joints.length; i++) {
 }`,
             };
             document.getElementById('code-editor').value = presets[name] || '';
+        }
+
+        // ===================== MUJOCO-STYLE FEATURES =====================
+        let vizWireframe = false;
+        let vizAxes = false;
+        let vizCom = false;
+        let axesHelpers = [];
+        let comMarkers = [];
+        let savedState = null;
+
+        function onSpeedChange(value) {
+            document.getElementById('val-speed').textContent = parseFloat(value).toFixed(1) + 'x';
+            // Send speed to server (adjust real_time_factor)
+            if (worldId) {
+                fetch(`${API}/worlds/${worldId}/control`, {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({ action: 'start' }) // restart with new speed
+                });
+            }
+        }
+
+        function toggleViz(mode) {
+            if (mode === 'wireframe') {
+                vizWireframe = !vizWireframe;
+                if (robotGroup) {
+                    robotGroup.traverse((child) => {
+                        if (child.isMesh && child.material) {
+                            child.material.wireframe = vizWireframe;
+                        }
+                    });
+                }
+            } else if (mode === 'axes') {
+                vizAxes = !vizAxes;
+                if (vizAxes) {
+                    // Add axes at each joint
+                    jointSpheres.forEach((sphere) => {
+                        const axes = new THREE.AxesHelper(0.05);
+                        axes.position.copy(sphere.position);
+                        scene.add(axes);
+                        axesHelpers.push(axes);
+                    });
+                } else {
+                    axesHelpers.forEach(a => scene.remove(a));
+                    axesHelpers = [];
+                }
+            } else if (mode === 'com') {
+                vizCom = !vizCom;
+                if (vizCom) {
+                    // Show center of mass as a yellow sphere
+                    if (robotGroup) {
+                        const box = new THREE.Box3().setFromObject(robotGroup);
+                        const center = box.getCenter(new THREE.Vector3());
+                        const comGeo = new THREE.SphereGeometry(0.015, 8, 8);
+                        const comMat = new THREE.MeshBasicMaterial({ color: 0xffff00 });
+                        const com = new THREE.Mesh(comGeo, comMat);
+                        com.position.copy(center);
+                        scene.add(com);
+                        comMarkers.push(com);
+
+                        // Cross hair
+                        const lineGeo = new THREE.BufferGeometry().setFromPoints([
+                            new THREE.Vector3(center.x - 0.04, center.y, center.z),
+                            new THREE.Vector3(center.x + 0.04, center.y, center.z),
+                        ]);
+                        const line = new THREE.Line(lineGeo, new THREE.LineBasicMaterial({ color: 0xffff00 }));
+                        scene.add(line);
+                        comMarkers.push(line);
+                    }
+                } else {
+                    comMarkers.forEach(m => scene.remove(m));
+                    comMarkers = [];
+                }
+            }
+        }
+
+        function saveState() {
+            if (!robotJoints.length) {
+                document.getElementById('rec-status').textContent = '❌ No robot to save';
+                return;
+            }
+            // Capture current slider values
+            savedState = {};
+            for (const j of robotJoints) {
+                const slider = document.getElementById(`slider-${j}`);
+                if (slider) savedState[j] = parseFloat(slider.value);
+            }
+            document.getElementById('rec-status').textContent = '💾 State saved (' + robotJoints.length + ' joints)';
+        }
+
+        function restoreState() {
+            if (!savedState) {
+                document.getElementById('rec-status').textContent = '❌ No saved state';
+                return;
+            }
+            // Restore slider values and send to sim
+            for (const [joint, val] of Object.entries(savedState)) {
+                const slider = document.getElementById(`slider-${joint}`);
+                if (slider) { slider.value = val; }
+                const valSpan = document.getElementById(`val-${joint}`);
+                if (valSpan) { valSpan.textContent = val.toFixed(2); }
+            }
+            // Send to sim
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({ type: 'joint_command', positions: savedState }));
+            } else {
+                sendJointPositions(savedState);
+            }
+            document.getElementById('rec-status').textContent = '↩ State restored';
         }
 
         // ===================== RECORDING & EXPORT =====================
