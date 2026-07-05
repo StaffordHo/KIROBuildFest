@@ -38,9 +38,14 @@ class SimplePhysicsEngine(PhysicsEnginePort):
         self._next_id = 1
         self._gravity = Vector3(0, 0, -9.81)
         self._dt = 1 / 240.0
+        self._environment_surfaces = []  # [{pos, half_size}] for collision
         # Contact physics
         from .contact_physics import ContactWorld
         self._contact_world = ContactWorld()
+
+    def add_environment_surface(self, pos: list, half_size: list):
+        """Register a surface for collision (e.g., table top)."""
+        self._environment_surfaces.append({"pos": pos, "half_size": half_size})
 
     def initialize(self, world: World) -> None:
         """Initialize with world config."""
@@ -131,18 +136,44 @@ class SimplePhysicsEngine(PhysicsEnginePort):
 
             # Locomotion for non-fixed-base robots
             if not robot_state.is_fixed_base:
-                # Estimate forward velocity from joint motion
-                avg_vel = 0.0
-                count = 0
-                for state in robot_state.joint_states.values():
-                    avg_vel += abs(state.velocity)
-                    count += 1
-                if count > 0:
-                    avg_vel /= count
-                # Convert joint velocity to base translation
-                # Higher scale factor for visible movement
-                forward_speed = avg_vel * 0.05  # 5cm per unit joint velocity
-                robot_state.base_velocity_offset[0] += forward_speed * dt
+                # Contact-driven locomotion:
+                # Only move forward when feet are in contact with ground AND pushing
+                poses = self._compute_fk(robot_state)
+
+                # Find foot links (leaf nodes in kinematic tree)
+                child_links = set()
+                for info in robot_state.joint_info.values():
+                    child_links.add(info["child_link"])
+                parent_links = set()
+                for info in robot_state.joint_info.values():
+                    parent_links.add(info["parent_link"])
+                foot_links = child_links - parent_links  # Leaves = feet
+
+                # Check which feet are in ground contact
+                feet_in_contact = 0
+                foot_push_force = 0.0
+
+                for foot_name in foot_links:
+                    if foot_name in poses:
+                        foot_pos = poses[foot_name][0]
+                        # Foot is in contact if Z <= ground + tolerance
+                        base_z = robot_state.robot.base_pose.position.z
+                        if foot_pos[2] <= base_z + 0.01:
+                            feet_in_contact += 1
+                            # Estimate push force from joint velocity of leg joints
+                            # Find joints leading to this foot
+                            for jname, jinfo in robot_state.joint_info.items():
+                                if jinfo["child_link"] == foot_name or jinfo["child_link"] in child_links:
+                                    js = robot_state.joint_states.get(jname)
+                                    if js:
+                                        foot_push_force += abs(js.velocity)
+
+                # Only move if at least 1 foot in contact
+                if feet_in_contact > 0 and foot_push_force > 0.1:
+                    # Forward speed proportional to push force and number of feet
+                    contact_ratio = feet_in_contact / max(len(foot_links), 1)
+                    forward_speed = foot_push_force * 0.015 * contact_ratio
+                    robot_state.base_velocity_offset[0] += forward_speed * dt
 
     def get_joint_states(self, robot_id: int) -> dict[str, JointState]:
         """Get current joint states."""
@@ -189,7 +220,7 @@ class SimplePhysicsEngine(PhysicsEnginePort):
         return pose
 
     def get_all_link_poses(self, robot_id: int) -> dict[str, tuple]:
-        """Get all link poses via forward kinematics with ground contact."""
+        """Get all link poses via forward kinematics with contact enforcement."""
         robot_state = self._robots.get(robot_id)
         if not robot_state:
             return {}
@@ -204,16 +235,30 @@ class SimplePhysicsEngine(PhysicsEnginePort):
                     pos, orn = poses[name]
                     poses[name] = ([pos[0], pos[1], pos[2] + offset], orn)
 
+        # Apply environment collision for fixed-base robots (arms)
+        # Prevent links from going below table surface (z=0.35 for tabletop)
+        if robot_state.is_fixed_base and self._environment_surfaces:
+            for name in poses:
+                pos, orn = poses[name]
+                for surface in self._environment_surfaces:
+                    # Check if link is within surface XZ bounds and below surface Y
+                    sx, sy, sz = surface["pos"]
+                    hx, hy, hz = surface["half_size"]
+                    if (sx - hx <= pos[0] <= sx + hx and
+                        sz - hz <= pos[1] <= sz + hz and
+                        pos[2] < sy + hy):
+                        # Push link above surface
+                        poses[name] = ([pos[0], pos[1], sy + hy + 0.01], orn)
+
         # Apply base locomotion for non-fixed-base robots
         base_offset = robot_state.base_velocity_offset
         if base_offset[0] != 0 or base_offset[1] != 0 or base_offset[2] != 0:
             for name in poses:
                 pos, orn = poses[name]
-                # base_velocity_offset is in URDF frame (X=forward, Y=left, Z=up)
                 poses[name] = ([
-                    pos[0] + base_offset[0],  # Forward (X)
-                    pos[1] + base_offset[1],  # Lateral (Y)
-                    pos[2],                    # Keep Z (height) from contact physics
+                    pos[0] + base_offset[0],
+                    pos[1] + base_offset[1],
+                    pos[2],
                 ], orn)
 
         return poses
