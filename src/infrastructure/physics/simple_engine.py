@@ -96,46 +96,56 @@ class SimplePhysicsEngine(PhysicsEnginePort):
         return self.load_robot(robot)
 
     def step(self, dt: float) -> None:
-        """Advance simulation — apply PD control to move joints toward targets."""
+        """Advance simulation — apply PD control and locomotion."""
         for robot_state in self._robots.values():
+            # Joint PD control
             for joint_name, state in robot_state.joint_states.items():
                 target = robot_state.joint_targets.get(joint_name, state.position)
                 info = robot_state.joint_info[joint_name]
                 limits = info["limits"]
                 damping = info["damping"]
 
-                # Simple PD controller
                 kp = 50.0
                 kd = 5.0 + damping
-
                 error = target - state.position
                 effort = kp * error - kd * state.velocity
-
-                # Clamp effort
                 max_effort = limits.effort
                 effort = max(-max_effort, min(max_effort, effort))
 
-                # Simple integration (semi-implicit Euler)
-                # Assume unit inertia for simplicity
                 acceleration = effort
                 new_velocity = state.velocity + acceleration * dt
                 new_velocity = max(-limits.velocity, min(limits.velocity, new_velocity))
-
-                # Apply damping
                 new_velocity *= (1.0 - damping * dt)
-
                 new_position = state.position + new_velocity * dt
 
-                # Enforce limits
                 jtype = info["type"]
                 if jtype in (JointType.REVOLUTE, JointType.PRISMATIC):
-                    new_position = max(limits.lower, min(limits.upper, new_position))
-                    if new_position == limits.lower or new_position == limits.upper:
-                        new_velocity = 0.0
+                    if limits.lower != 0 or limits.upper != 0:
+                        new_position = max(limits.lower, min(limits.upper, new_position))
+                        if new_position == limits.lower or new_position == limits.upper:
+                            new_velocity = 0.0
 
                 state.position = new_position
                 state.velocity = new_velocity
                 state.effort = effort
+
+            # Locomotion for non-fixed-base robots
+            if not robot_state.is_fixed_base:
+                # Estimate forward velocity from joint motion
+                # Simple model: average joint velocity → forward motion
+                avg_vel = 0.0
+                count = 0
+                for state in robot_state.joint_states.values():
+                    avg_vel += abs(state.velocity)
+                    count += 1
+                if count > 0:
+                    avg_vel /= count
+                # Convert joint velocity to base translation (simplified gait model)
+                # Forward speed proportional to average joint speed
+                forward_speed = avg_vel * 0.02  # Scale factor
+                robot_state.base_velocity_offset[0] += forward_speed * dt
+                # Small lateral drift based on asymmetric joint motion
+                robot_state.base_velocity_offset[1] += math.sin(robot_state.base_velocity_offset[0] * 5) * 0.001 * dt
 
     def get_joint_states(self, robot_id: int) -> dict[str, JointState]:
         """Get current joint states."""
@@ -189,15 +199,24 @@ class SimplePhysicsEngine(PhysicsEnginePort):
         poses = self._compute_fk(robot_state)
 
         # Apply ground contact: clamp Z >= 0 for all links
-        # and push the entire robot up if any link is below ground
         if poses:
             min_z = min(p[0][2] for p in poses.values())
             if min_z < 0:
-                # Elevate all links by the penetration amount
                 offset = -min_z
                 for name in poses:
                     pos, orn = poses[name]
                     poses[name] = ([pos[0], pos[1], pos[2] + offset], orn)
+
+        # Apply base locomotion for non-fixed-base robots
+        base_offset = robot_state.base_velocity_offset
+        if base_offset[0] != 0 or base_offset[1] != 0 or base_offset[2] != 0:
+            for name in poses:
+                pos, orn = poses[name]
+                poses[name] = ([
+                    pos[0] + base_offset[0],
+                    pos[1] + base_offset[1],
+                    pos[2] + base_offset[2],
+                ], orn)
 
         return poses
 
@@ -346,3 +365,26 @@ class _RobotState:
         self.joint_targets = joint_targets
         self.joint_info = joint_info
         self.robot = robot
+        # Locomotion: cumulative base position offset
+        self.base_velocity_offset = [0.0, 0.0, 0.0]  # [x, y, z] in sim frame
+        self.base_velocity = [0.0, 0.0, 0.0]
+        self.is_fixed_base = self._detect_fixed_base()
+
+    def _detect_fixed_base(self) -> bool:
+        """Determine if this robot has a fixed base (arm) or mobile base (quadruped/mobile)."""
+        # Heuristic: if robot has > 6 DOF and multiple branches, it's likely mobile
+        num_actuated = len(self.joint_states)
+        # Check for multiple children from base (branching = legs)
+        base = self.robot.base_link
+        if not base:
+            return True
+        children_from_base = sum(
+            1 for info in self.joint_info.values()
+            if info["parent_link"] == base.name
+        )
+        # Arms: serial chain (1 child from base), Quadrupeds: 4+ children
+        if children_from_base >= 3:
+            return False  # Likely a quadruped/humanoid
+        if num_actuated <= 9:
+            return True   # Likely a manipulator
+        return True  # Default: fixed
