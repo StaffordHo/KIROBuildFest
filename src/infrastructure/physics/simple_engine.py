@@ -26,11 +26,11 @@ class SimplePhysicsEngine(PhysicsEnginePort):
     - Joint position/velocity control with limits
     - Forward kinematics (link pose computation)
     - Basic damping
+    - Ground plane contact (spring-damper)
 
     Does NOT simulate:
-    - Contact/collision dynamics
-    - Rigid body inertia
-    - Friction forces
+    - Full rigid body inertia
+    - Object-to-object contact
     """
 
     def __init__(self):
@@ -38,6 +38,9 @@ class SimplePhysicsEngine(PhysicsEnginePort):
         self._next_id = 1
         self._gravity = Vector3(0, 0, -9.81)
         self._dt = 1 / 240.0
+        # Contact physics
+        from .contact_physics import ContactWorld
+        self._contact_world = ContactWorld()
 
     def initialize(self, world: World) -> None:
         """Initialize with world config."""
@@ -179,11 +182,24 @@ class SimplePhysicsEngine(PhysicsEnginePort):
         return pose
 
     def get_all_link_poses(self, robot_id: int) -> dict[str, tuple]:
-        """Get all link poses via forward kinematics."""
+        """Get all link poses via forward kinematics with ground contact."""
         robot_state = self._robots.get(robot_id)
         if not robot_state:
             return {}
-        return self._compute_fk(robot_state)
+        poses = self._compute_fk(robot_state)
+
+        # Apply ground contact: clamp Z >= 0 for all links
+        # and push the entire robot up if any link is below ground
+        if poses:
+            min_z = min(p[0][2] for p in poses.values())
+            if min_z < 0:
+                # Elevate all links by the penetration amount
+                offset = -min_z
+                for name in poses:
+                    pos, orn = poses[name]
+                    poses[name] = ([pos[0], pos[1], pos[2] + offset], orn)
+
+        return poses
 
     def reset(self) -> None:
         """Reset all joints to zero."""

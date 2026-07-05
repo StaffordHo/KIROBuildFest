@@ -348,7 +348,22 @@ async def fetch_and_load_model(request: FetchModelRequest):
     world.add_robot(robot)
     engine = _physics_engines.get(request.world_id)
     if engine:
-        engine.load_robot(robot)
+        body_id = engine.load_robot(robot)
+
+        # Auto-elevate: if any link FK position goes below Z=0, offset the base
+        poses = engine.get_all_link_poses(body_id)
+        if poses:
+            min_z = min(p[0][2] for p in poses.values())
+            if min_z < -0.01:
+                # Need to elevate - adjust all joint targets won't work,
+                # so we shift the robot's stored base offset
+                elevation = -min_z + 0.03
+                robot_state = engine._robots.get(body_id)
+                if robot_state:
+                    from ...domain.models.geometry import Vector3, Pose
+                    robot_state.robot.base_pose = Pose(
+                        position=Vector3(0, 0, elevation)
+                    )
 
     return {
         "success": True,
