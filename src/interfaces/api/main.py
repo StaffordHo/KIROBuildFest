@@ -93,6 +93,10 @@ app.include_router(robot_types_router, prefix="/api", tags=["Robot Types"])
 from .model_library import router as model_library_router
 app.include_router(model_library_router, prefix="/api", tags=["Model Library"])
 
+# Register recording router
+from .recording import router as recording_router
+app.include_router(recording_router, prefix="/api", tags=["Recording & Export"])
+
 
 # --- REST Endpoints ---
 
@@ -532,6 +536,11 @@ async def _simulation_loop(world_id: str):
             state["mobile_robots"] = extra_state.get("mobile_robots", {})
             state["tasks"] = extra_state.get("tasks", {})
             await _broadcast(world_id, state)
+
+            # Record frame if recording is active
+            from .recording import record_frame
+            for rid, rstate in state.get("robots", {}).items():
+                record_frame(world_id, world.state.sim_time, rstate.get("joints", {}), rstate.get("links", {}))
 
         # Yield to event loop
         await asyncio.sleep(target_dt * world.physics.real_time_factor)

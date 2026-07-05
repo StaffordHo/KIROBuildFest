@@ -159,6 +159,13 @@
                 <button id="btn-pause" onclick="controlSim('pause')">⏸ Pause</button>
                 <button id="btn-reset" onclick="controlSim('reset')">↺ Reset</button>
             </div>
+            <div class="btn-group" style="margin-top:6px;">
+                <button onclick="startRecording()" style="font-size:11px;">⏺ Record</button>
+                <button onclick="stopRecording()" style="font-size:11px;" class="danger">⏹ Stop Rec</button>
+                <button onclick="exportData('json')" style="font-size:11px;">📥 JSON</button>
+                <button onclick="exportData('csv')" style="font-size:11px;">📥 CSV</button>
+            </div>
+            <div id="rec-status" style="font-size:10px;color:#8b949e;margin-top:4px;"></div>
         </div>
 
         <div class="section">
@@ -1441,6 +1448,53 @@ for (let i = 0; i < joints.length; i++) {
 }`,
             };
             document.getElementById('code-editor').value = presets[name] || '';
+        }
+
+        // ===================== RECORDING & EXPORT =====================
+        async function startRecording() {
+            if (!worldId || !robotId) {
+                document.getElementById('rec-status').textContent = '❌ Load a robot first';
+                return;
+            }
+            await fetch(`${API}/api/recording/start`, {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({ world_id: worldId, robot_id: robotId })
+            });
+            document.getElementById('rec-status').textContent = '⏺ Recording...';
+        }
+
+        async function stopRecording() {
+            if (!worldId) return;
+            const r = await fetch(`${API}/api/recording/stop`, {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({ world_id: worldId })
+            });
+            if (r.ok) {
+                const data = await r.json();
+                document.getElementById('rec-status').textContent = `✅ Recorded ${data.num_frames} frames (${data.duration.toFixed(1)}s)`;
+            }
+        }
+
+        async function exportData(format) {
+            if (!worldId) return;
+            const r = await fetch(`${API}/api/recording/export/${worldId}/${format}`);
+            if (!r.ok) {
+                document.getElementById('rec-status').textContent = '❌ No recording to export';
+                return;
+            }
+            const data = await r.json();
+            // Trigger download
+            const content = format === 'csv' ? data.csv : JSON.stringify(data, null, 2);
+            const blob = new Blob([content], { type: format === 'csv' ? 'text/csv' : 'application/json' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `trajectory_${worldId.slice(0,8)}.${format}`;
+            a.click();
+            URL.revokeObjectURL(url);
+            document.getElementById('rec-status').textContent = `📥 Exported as ${format.toUpperCase()}`;
         }
 
         // ===================== SCENARIOS =====================
