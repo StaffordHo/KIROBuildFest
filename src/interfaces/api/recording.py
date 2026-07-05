@@ -158,6 +158,142 @@ async def export_csv(world_id: str):
     )
 
 
+@router.get("/export/{world_id}/ros")
+async def export_ros_trajectory(world_id: str):
+    """Export as ROS2 JointTrajectory message format.
+
+    Output can be published directly to a /joint_trajectory_controller/joint_trajectory
+    topic for real robot execution via:
+        ros2 topic pub /joint_trajectory_controller/joint_trajectory trajectory_msgs/msg/JointTrajectory <data>
+    """
+    session = _recordings.get(world_id)
+    if not session:
+        raise HTTPException(404, "No recording found for this world")
+
+    if not session.frames:
+        raise HTTPException(400, "Recording has no frames")
+
+    # Build ROS2 JointTrajectory message structure
+    joint_names = list(session.frames[0].get("joints", {}).keys())
+    points = []
+
+    for frame in session.frames:
+        joints = frame.get("joints", {})
+        point = {
+            "positions": [joints.get(j, {}).get("position", 0.0) for j in joint_names],
+            "velocities": [joints.get(j, {}).get("velocity", 0.0) for j in joint_names],
+            "accelerations": [],  # Not tracked
+            "effort": [],
+            "time_from_start": {
+                "sec": int(frame["sim_time"]),
+                "nanosec": int((frame["sim_time"] % 1) * 1e9),
+            },
+        }
+        points.append(point)
+
+    ros_msg = {
+        "header": {
+            "stamp": {"sec": 0, "nanosec": 0},
+            "frame_id": "base_link",
+        },
+        "joint_names": joint_names,
+        "points": points,
+    }
+
+    return JSONResponse(
+        content={
+            "format": "trajectory_msgs/JointTrajectory",
+            "description": "ROS2-compatible JointTrajectory. Publish to /joint_trajectory_controller/joint_trajectory",
+            "usage": "ros2 topic pub --once /joint_trajectory_controller/joint_trajectory trajectory_msgs/msg/JointTrajectory '<paste_message>'",
+            "message": ros_msg,
+        },
+        headers={"Content-Disposition": f"attachment; filename=ros_trajectory_{world_id[:8]}.json"},
+    )
+
+
+@router.get("/export/{world_id}/ml")
+async def export_ml_dataset(world_id: str):
+    """Export as ML-ready dataset format (compatible with robomimic/D4RL).
+
+    Structure follows the observation-action format used in:
+    - robomimic (for imitation learning)
+    - D4RL (for offline RL)
+    - LeRobot (Hugging Face robotics dataset format)
+
+    Each timestep contains:
+    - observations: joint positions, velocities
+    - actions: target positions (what was commanded)
+    - rewards: placeholder (0.0, can be labeled post-hoc)
+    - dones: whether episode ended
+    """
+    session = _recordings.get(world_id)
+    if not session:
+        raise HTTPException(404, "No recording found for this world")
+
+    if not session.frames:
+        raise HTTPException(400, "Recording has no frames")
+
+    joint_names = list(session.frames[0].get("joints", {}).keys())
+    num_joints = len(joint_names)
+
+    observations = []
+    actions = []
+    timestamps = []
+
+    for i, frame in enumerate(session.frames):
+        joints = frame.get("joints", {})
+
+        # Observation: [pos_1, pos_2, ..., vel_1, vel_2, ...]
+        positions = [joints.get(j, {}).get("position", 0.0) for j in joint_names]
+        velocities = [joints.get(j, {}).get("velocity", 0.0) for j in joint_names]
+        obs = positions + velocities
+        observations.append(obs)
+
+        # Action: next target position (use next frame's position, or same for last)
+        if i < len(session.frames) - 1:
+            next_joints = session.frames[i + 1].get("joints", {})
+            action = [next_joints.get(j, {}).get("position", 0.0) for j in joint_names]
+        else:
+            action = positions  # Last frame: action = stay
+        actions.append(action)
+        timestamps.append(frame["sim_time"])
+
+    dataset = {
+        "format": "robosim_ml_dataset_v1",
+        "description": "ML-ready trajectory dataset. Compatible with robomimic/D4RL/LeRobot formats.",
+        "metadata": {
+            "robot_id": session.robot_id,
+            "num_episodes": 1,
+            "num_timesteps": len(observations),
+            "observation_dim": num_joints * 2,  # pos + vel
+            "action_dim": num_joints,
+            "joint_names": joint_names,
+            "dt": session.duration / max(len(session.frames) - 1, 1),
+        },
+        "episodes": [
+            {
+                "episode_id": 0,
+                "num_steps": len(observations),
+                "observations": observations,
+                "actions": actions,
+                "rewards": [0.0] * len(observations),  # Unlabeled
+                "dones": [False] * (len(observations) - 1) + [True],
+                "timestamps": timestamps,
+            }
+        ],
+        "usage": {
+            "python": "import json; data = json.load(open('dataset.json')); obs = np.array(data['episodes'][0]['observations'])",
+            "robomimic": "Convert observations/actions to HDF5 with robomimic.utils.dataset_utils",
+            "pytorch": "dataset = torch.tensor(data['episodes'][0]['observations'])",
+        },
+    }
+
+    return JSONResponse(
+        content=dataset,
+        headers={"Content-Disposition": f"attachment; filename=ml_dataset_{world_id[:8]}.json"},
+    )
+
+
 @router.get("/status/{world_id}")
 async def recording_status(world_id: str):
     """Check recording status."""
