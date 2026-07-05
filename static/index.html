@@ -148,6 +148,7 @@
                 <button onclick="loadEnvironment('tabletop')">🪑 Tabletop</button>
                 <button onclick="loadEnvironment('warehouse')">🏭 Warehouse</button>
                 <button onclick="loadEnvironment('outdoor')">🌳 Outdoor</button>
+                <button onclick="loadEnvironment('factory')">⚙️ Factory</button>
             </div>
         </div>
 
@@ -1826,49 +1827,102 @@ if (phase < 2) {
                 setStatus('running', 'Scenario: Pick & Place');
 
             } else if (name === 'warehouse_sort') {
-                // Arm sorting in warehouse
+                // MoMa: Mobile base + Arm sorting in warehouse
                 loadEnvironment('warehouse');
-                document.getElementById('model-select').value = 'panda_franka';
-                await loadFromLibrary();
 
-                document.getElementById('code-editor').value = `// Warehouse Sorting: Arm scans and sorts packages
-const cycle = t % 10;
-const baseAngle = sin(t * 0.4) * 1.2; // Sweep base
-positions[joints[0]] = baseAngle;
+                // Create mobile base first
+                if (!worldId) await createWorld();
 
+                // Clear previous
+                if (robotGroup) { scene.remove(robotGroup); robotGroup = null; }
+                if (droneMesh) { droneMesh = null; }
+                if (mobileRobotMesh) { mobileRobotMesh = null; }
+                robotGroup = new THREE.Group();
+                scene.add(robotGroup);
+
+                // Add mobile robot for the base
+                const mobileResp = await fetch(`${API}/api/mobile-robots`, {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({ name: 'moma_base', drive_type: 'differential' })
+                });
+                const mobileData = await mobileResp.json();
+                mobileRobotId = mobileData.robot_id;
+                buildMobileRobotVisual('differential');
+
+                // Add arm on top
+                const armResp = await fetch(`${API}/worlds/${worldId}/robots`, {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({ name: 'moma_arm', dof: 6, link_length: 0.08 })
+                });
+                const armData = await armResp.json();
+                robotId = armData.robot_id;
+                robotJoints = armData.joints.filter(j => j !== 'ee_joint');
+                buildJointSliders(robotJoints);
+
+                document.getElementById('joints-section').style.display = 'block';
+                document.getElementById('mobile-section').style.display = 'block';
+                document.getElementById('drone-section').style.display = 'none';
+
+                // MoMa warehouse sorting algorithm
+                document.getElementById('code-editor').value = `// MoMa Warehouse Sort: Mobile base navigates, arm sorts
+// Phase-based: drive to shelf → pick → drive to pallet → place
+const cycle = t % 12; // 12-second full cycle
+
+// Arm motion (sorting)
 if (cycle < 3) {
-    // Scan left shelf
-    positions[joints[1]] = -0.4;
-    positions[joints[2]] = 0.3 + sin(t * 2) * 0.1;
-    positions[joints[3]] = 0.5;
-    positions[joints[4]] = sin(t * 1.5) * 0.3;
-} else if (cycle < 5) {
-    // Pick from shelf
-    positions[joints[1]] = -0.7;
+    // Drive forward to shelf & arm reaches up
+    positions[joints[0]] = sin(t * 0.5) * 0.3;
+    positions[joints[1]] = -0.8;
     positions[joints[2]] = 0.5;
-    positions[joints[3]] = 0.8;
-    positions[joints[4]] = 0.2;
-} else if (cycle < 7) {
-    // Move to sorting area
-    positions[joints[0]] = -baseAngle;
-    positions[joints[1]] = -0.3;
-    positions[joints[2]] = 0.2;
-    positions[joints[3]] = 0.4;
-    positions[joints[4]] = cos(t) * 0.2;
-} else {
-    // Place and return
-    positions[joints[1]] = -0.5;
-    positions[joints[2]] = 0.6;
+    for (let i = 3; i < joints.length; i++)
+        positions[joints[i]] = sin(t * 0.3 + i) * 0.2;
+} else if (cycle < 5) {
+    // Pick from shelf (arm extended)
+    positions[joints[0]] = 0.5;
+    positions[joints[1]] = -1.0;
+    positions[joints[2]] = 0.7;
     positions[joints[3]] = 0.3;
-    for (let i = 4; i < joints.length; i++) {
-        positions[joints[i]] = sin(t * 0.5 + i) * 0.15;
-    }
-}
-for (let i = 5; i < joints.length; i++) {
-    positions[joints[i]] = sin(t * 2 + i * 0.5) * 0.3;
+    for (let i = 4; i < joints.length; i++)
+        positions[joints[i]] = 0.1;
+} else if (cycle < 8) {
+    // Drive back, arm tucked with object
+    positions[joints[0]] = -0.3 + sin(t * 0.4) * 0.1;
+    positions[joints[1]] = -0.4;
+    positions[joints[2]] = 0.2;
+    for (let i = 3; i < joints.length; i++)
+        positions[joints[i]] = 0;
+} else {
+    // Place on pallet (arm extends sideways)
+    positions[joints[0]] = -0.8;
+    positions[joints[1]] = -0.6;
+    positions[joints[2]] = 0.5;
+    positions[joints[3]] = -0.3;
+    for (let i = 4; i < joints.length; i++)
+        positions[joints[i]] = sin(t + i) * 0.1;
 }`;
-                setTimeout(() => runAlgorithm(), 500);
-                setStatus('running', 'Scenario: Warehouse Sort');
+
+                // Drive the mobile base in a patrol pattern
+                let momaInterval = setInterval(async () => {
+                    const dt = Date.now() / 1000;
+                    const phase = (dt % 12);
+                    let linear = 0, angular = 0;
+                    if (phase < 3) { linear = 0.3; angular = 0; }        // Drive forward
+                    else if (phase < 5) { linear = 0; angular = 0; }     // Stop at shelf
+                    else if (phase < 8) { linear = -0.2; angular = 0.5; } // Reverse and turn
+                    else { linear = 0.2; angular = -0.3; }               // Drive to pallet
+
+                    await fetch(`${API}/api/mobile-robots/command`, {
+                        method: 'POST',
+                        headers: {'Content-Type': 'application/json'},
+                        body: JSON.stringify({ robot_id: mobileRobotId, linear_x: linear, angular_z: angular })
+                    });
+                }, 200);
+                window._momaInterval = momaInterval;
+
+                setTimeout(() => { controlSim('start'); runAlgorithm(); }, 500);
+                setStatus('running', 'Scenario: MoMa Warehouse Sort');
 
             } else if (name === 'quadruped_nav') {
                 // Quadruped navigating outdoor environment
@@ -2403,6 +2457,124 @@ for (let i = 0; i < joints.length; i++) {
                     rock.position.set(rx, ry, rz);
                     rock.castShadow = true;
                     environmentGroup.add(rock);
+                }
+            }
+
+            } else if (type === 'factory') {
+                // Factory floor — conveyor belts, workstations, larger space
+                // Floor with safety markings
+                const factoryFloor = new THREE.Mesh(
+                    new THREE.PlaneGeometry(6, 6),
+                    new THREE.MeshStandardMaterial({ color: 0x3a3a3a, roughness: 0.9 })
+                );
+                factoryFloor.rotation.x = -Math.PI / 2;
+                factoryFloor.position.y = 0.001;
+                factoryFloor.receiveShadow = true;
+                environmentGroup.add(factoryFloor);
+
+                // Safety zone markings (yellow lines)
+                for (let i = -2; i <= 2; i += 0.5) {
+                    const line = new THREE.Mesh(
+                        new THREE.BoxGeometry(6, 0.002, 0.02),
+                        new THREE.MeshStandardMaterial({ color: 0xf4a261, emissive: 0xf4a261, emissiveIntensity: 0.15 })
+                    );
+                    line.position.set(0, 0.002, i);
+                    environmentGroup.add(line);
+                }
+                for (let i = -2; i <= 2; i += 0.5) {
+                    const line = new THREE.Mesh(
+                        new THREE.BoxGeometry(0.02, 0.002, 6),
+                        new THREE.MeshStandardMaterial({ color: 0xf4a261, emissive: 0xf4a261, emissiveIntensity: 0.15 })
+                    );
+                    line.position.set(i, 0.002, 0);
+                    environmentGroup.add(line);
+                }
+
+                // Conveyor belt
+                const conveyorBase = new THREE.Mesh(
+                    new THREE.BoxGeometry(2.5, 0.05, 0.4),
+                    new THREE.MeshStandardMaterial({ color: 0x2a2a2a, metalness: 0.8, roughness: 0.2 })
+                );
+                conveyorBase.position.set(0, 0.4, 1.2);
+                conveyorBase.castShadow = true;
+                environmentGroup.add(conveyorBase);
+                // Conveyor legs
+                for (let x = -1; x <= 1; x += 1) {
+                    const leg = new THREE.Mesh(
+                        new THREE.BoxGeometry(0.05, 0.4, 0.05),
+                        new THREE.MeshStandardMaterial({ color: 0x444444 })
+                    );
+                    leg.position.set(x, 0.2, 1.2);
+                    environmentGroup.add(leg);
+                }
+                // Boxes on conveyor
+                for (let x = -0.8; x <= 0.8; x += 0.4) {
+                    const box = new THREE.Mesh(
+                        new THREE.BoxGeometry(0.15, 0.12, 0.15),
+                        new THREE.MeshStandardMaterial({
+                            color: [0xe63946, 0x457b9d, 0x2a9d8f, 0xf4a261][Math.floor(Math.random() * 4)],
+                            roughness: 0.5
+                        })
+                    );
+                    box.position.set(x, 0.49, 1.2);
+                    box.castShadow = true;
+                    environmentGroup.add(box);
+                }
+
+                // Workstations (tables with tools)
+                const workstationPositions = [[-1.5, -0.8], [1.5, -0.8], [-1.5, 0.4], [1.5, 0.4]];
+                for (const [wx, wz] of workstationPositions) {
+                    const table = new THREE.Mesh(
+                        new THREE.BoxGeometry(0.6, 0.04, 0.5),
+                        new THREE.MeshStandardMaterial({ color: 0x6b6b6b, metalness: 0.5, roughness: 0.4 })
+                    );
+                    table.position.set(wx, 0.45, wz);
+                    table.castShadow = true;
+                    environmentGroup.add(table);
+                    // Table legs
+                    for (const [lx, lz] of [[-0.25, -0.2], [0.25, -0.2], [-0.25, 0.2], [0.25, 0.2]]) {
+                        const leg = new THREE.Mesh(
+                            new THREE.CylinderGeometry(0.02, 0.02, 0.45, 8),
+                            new THREE.MeshStandardMaterial({ color: 0x555555 })
+                        );
+                        leg.position.set(wx + lx, 0.225, wz + lz);
+                        environmentGroup.add(leg);
+                    }
+                }
+
+                // Industrial robot mounting pedestals
+                const pedestalPositions = [[-0.7, -0.2], [0.7, -0.2]];
+                for (const [px, pz] of pedestalPositions) {
+                    const pedestal = new THREE.Mesh(
+                        new THREE.CylinderGeometry(0.08, 0.1, 0.3, 16),
+                        new THREE.MeshStandardMaterial({ color: 0x333333, metalness: 0.9, roughness: 0.1 })
+                    );
+                    pedestal.position.set(px, 0.15, pz);
+                    pedestal.castShadow = true;
+                    environmentGroup.add(pedestal);
+                }
+
+                // Walls (back and sides)
+                const wallMat = new THREE.MeshStandardMaterial({ color: 0x4a4a4e, roughness: 0.8 });
+                const backWall = new THREE.Mesh(new THREE.BoxGeometry(6, 1.5, 0.05), wallMat);
+                backWall.position.set(0, 0.75, 2.5);
+                environmentGroup.add(backWall);
+                const leftWall = new THREE.Mesh(new THREE.BoxGeometry(0.05, 1.5, 5), wallMat);
+                leftWall.position.set(-2.5, 0.75, 0);
+                environmentGroup.add(leftWall);
+                const rightWall = new THREE.Mesh(new THREE.BoxGeometry(0.05, 1.5, 5), wallMat);
+                rightWall.position.set(2.5, 0.75, 0);
+                environmentGroup.add(rightWall);
+
+                // Safety barriers (red/white striped)
+                const barrierPositions = [[-1, -1.8], [0, -1.8], [1, -1.8]];
+                for (const [bx, bz] of barrierPositions) {
+                    const barrier = new THREE.Mesh(
+                        new THREE.BoxGeometry(0.8, 0.5, 0.05),
+                        new THREE.MeshStandardMaterial({ color: 0xff3333 })
+                    );
+                    barrier.position.set(bx, 0.25, bz);
+                    environmentGroup.add(barrier);
                 }
             }
 
