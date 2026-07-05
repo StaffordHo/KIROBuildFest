@@ -208,6 +208,14 @@
                 <button onclick="setDroneLand()" style="font-size:10px;padding:4px 8px;">🛬 Land</button>
                 <button onclick="setDroneMax()" style="font-size:10px;padding:4px 8px;">⬆ Max Thrust</button>
             </div>
+            <p style="font-size:10px;color:#8b949e;margin-bottom:6px;">PX4-Style Flight Modes:</p>
+            <div class="btn-group" style="margin-bottom:8px;">
+                <button onclick="droneFlightMode('takeoff')" style="font-size:9px;padding:3px 6px;">TAKEOFF</button>
+                <button onclick="droneFlightMode('hover')" style="font-size:9px;padding:3px 6px;">HOVER</button>
+                <button onclick="droneFlightMode('waypoint')" style="font-size:9px;padding:3px 6px;">WAYPOINT</button>
+                <button onclick="droneFlightMode('rtl')" style="font-size:9px;padding:3px 6px;">RTL</button>
+                <button onclick="droneFlightMode('land')" style="font-size:9px;padding:3px 6px;">LAND</button>
+            </div>
             <div class="joint-slider">
                 <label><span>Thrust (0.53 = hover)</span><span id="val-thrust">0.00</span></label>
                 <input type="range" min="0" max="1" step="0.01" value="0" id="slider-thrust" oninput="onDroneSlider()">
@@ -301,6 +309,11 @@ def control(t, joints):
             <button onclick="runAlgorithm()" style="width:100%;margin-top:6px;">▶ Run Algorithm</button>
             <button onclick="stopAlgorithm()" style="width:100%;margin-top:4px;" class="danger">⏹ Stop</button>
             <div id="algo-status" style="margin-top:6px;font-size:11px;color:#8b949e;"></div>
+            <div id="reward-display" style="margin-top:4px;font-size:10px;color:#7ee787;display:none;">
+                <span>📊 Reward: <strong id="reward-value">0.00</strong></span>
+                <span style="margin-left:8px;">Steps: <span id="algo-steps">0</span></span>
+                <span style="margin-left:8px;">Σ: <span id="cumulative-reward">0.00</span></span>
+            </div>
         </div>
     </div>
 
@@ -1279,6 +1292,67 @@ def control(t, joints):
             onDroneSlider();
         }
 
+        // PX4-style flight modes
+        let droneFlightModeInterval = null;
+        function droneFlightMode(mode) {
+            if (droneFlightModeInterval) clearInterval(droneFlightModeInterval);
+
+            if (mode === 'takeoff') {
+                // Ramp thrust up to hover level
+                let t = 0;
+                droneFlightModeInterval = setInterval(() => {
+                    t += 0.05;
+                    const thrust = Math.min(0.6, t * 0.3);
+                    document.getElementById('slider-thrust').value = thrust;
+                    document.getElementById('val-thrust').textContent = thrust.toFixed(2);
+                    onDroneSlider();
+                    if (thrust >= 0.6) clearInterval(droneFlightModeInterval);
+                }, 100);
+            } else if (mode === 'hover') {
+                document.getElementById('slider-thrust').value = '0.53';
+                document.getElementById('slider-roll').value = '0';
+                document.getElementById('slider-pitch').value = '0';
+                document.getElementById('slider-yaw').value = '0';
+                onDroneSlider();
+            } else if (mode === 'waypoint') {
+                // Square waypoint pattern
+                let step = 0;
+                droneFlightModeInterval = setInterval(() => {
+                    const phase = (step / 40) % 4;
+                    let pitch = 0, roll = 0;
+                    if (phase < 1) pitch = 0.15;       // Forward
+                    else if (phase < 2) roll = 0.15;   // Right
+                    else if (phase < 3) pitch = -0.15; // Backward
+                    else roll = -0.15;                  // Left
+                    document.getElementById('slider-thrust').value = '0.55';
+                    document.getElementById('slider-pitch').value = pitch;
+                    document.getElementById('slider-roll').value = roll;
+                    document.getElementById('val-thrust').textContent = '0.55';
+                    document.getElementById('val-pitch').textContent = pitch.toFixed(2);
+                    document.getElementById('val-roll').textContent = roll.toFixed(2);
+                    onDroneSlider();
+                    step++;
+                }, 200);
+            } else if (mode === 'rtl') {
+                // Return to launch: zero roll/pitch, maintain altitude
+                document.getElementById('slider-thrust').value = '0.53';
+                document.getElementById('slider-roll').value = '0';
+                document.getElementById('slider-pitch').value = '0';
+                document.getElementById('slider-yaw').value = '0.3'; // Yaw to face home
+                onDroneSlider();
+            } else if (mode === 'land') {
+                // Gradually reduce thrust
+                let thrust = 0.5;
+                droneFlightModeInterval = setInterval(() => {
+                    thrust = Math.max(0, thrust - 0.02);
+                    document.getElementById('slider-thrust').value = thrust;
+                    document.getElementById('val-thrust').textContent = thrust.toFixed(2);
+                    onDroneSlider();
+                    if (thrust <= 0) clearInterval(droneFlightModeInterval);
+                }, 100);
+            }
+        }
+
         // ===================== MOBILE ROBOTS =====================
         let mobileRobotId = null;
         let mobileRobotMesh = null;
@@ -1397,6 +1471,8 @@ def control(t, joints):
         // ===================== ALGORITHM TESTING =====================
         let algoInterval = null;
         let algoStartTime = 0;
+        let algoSteps = 0;
+        let cumulativeReward = 0;
 
         function runAlgorithm() {
             if (!worldId || !robotId || robotJoints.length === 0) {
@@ -1410,16 +1486,17 @@ def control(t, joints):
                 return;
             }
 
-            // Ensure simulation is running
             controlSim('start');
             algoStartTime = Date.now();
-
-            // Parse the user's algorithm into a JS function
-            // We convert simple Python-like syntax to JS
+            algoSteps = 0;
+            cumulativeReward = 0;
             document.getElementById('algo-status').textContent = '🟢 Running algorithm...';
+            document.getElementById('reward-display').style.display = 'block';
+
+            let prevPositions = null;
 
             algoInterval = setInterval(() => {
-                const t = (Date.now() - algoStartTime) / 1000; // seconds
+                const t = (Date.now() - algoStartTime) / 1000;
                 try {
                     const positions = executeAlgorithm(code, t, robotJoints);
                     if (positions && Object.keys(positions).length > 0) {
@@ -1428,19 +1505,58 @@ def control(t, joints):
                         } else {
                             sendJointPositions(positions);
                         }
-                        // Update sliders to reflect
                         for (const [joint, val] of Object.entries(positions)) {
                             const slider = document.getElementById(`slider-${joint}`);
                             if (slider) { slider.value = val; }
                             const valSpan = document.getElementById(`val-${joint}`);
                             if (valSpan) { valSpan.textContent = val.toFixed(2); }
                         }
+
+                        // Isaac Gym-style reward computation
+                        algoSteps++;
+                        const reward = computeReward(positions, prevPositions, t);
+                        cumulativeReward += reward;
+                        document.getElementById('reward-value').textContent = reward.toFixed(3);
+                        document.getElementById('algo-steps').textContent = algoSteps;
+                        document.getElementById('cumulative-reward').textContent = cumulativeReward.toFixed(2);
+                        prevPositions = { ...positions };
                     }
                 } catch (e) {
                     document.getElementById('algo-status').textContent = '❌ Error: ' + e.message;
                     stopAlgorithm();
                 }
-            }, 50); // 20Hz control loop
+            }, 50);
+        }
+
+        function computeReward(positions, prevPositions, t) {
+            // Isaac Gym-inspired reward function:
+            // - Reward smoothness (penalize jerky motion)
+            // - Reward alive (positive for being active)
+            // - Penalize extreme joint angles
+            let reward = 0.01; // alive bonus
+
+            const values = Object.values(positions);
+
+            // Smoothness reward: penalize large changes from previous step
+            if (prevPositions) {
+                let jerk = 0;
+                for (const key of Object.keys(positions)) {
+                    const diff = Math.abs(positions[key] - (prevPositions[key] || 0));
+                    jerk += diff * diff;
+                }
+                reward -= jerk * 0.1; // Penalize jerk
+            }
+
+            // Joint limit penalty
+            for (const val of values) {
+                if (Math.abs(val) > 2.5) reward -= 0.05; // Near limit penalty
+            }
+
+            // Energy efficiency: penalize high joint velocities
+            const energy = values.reduce((sum, v) => sum + v * v, 0) / values.length;
+            reward -= energy * 0.005;
+
+            return reward;
         }
 
         function stopAlgorithm() {
